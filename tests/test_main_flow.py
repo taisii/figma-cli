@@ -1,6 +1,6 @@
 import os
 import pytest
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock, mock_open, call
 
 from src.main_controller import MainController
 
@@ -41,7 +41,8 @@ def mock_dependencies():
 def test_initial_run(mock_dependencies):
     """初回実行時のフローをテストする"""
     mock_dependencies['cache_manager'].load_cache.return_value = None # No cache
-    mock_dependencies['mock_os'].path.exists.return_value = False # No old outline
+    mock_dependencies['mock_os'].path.exists.side_effect = [False, False] # outline.md, outline_history/
+    mock_dependencies['mock_os'].rename.assert_not_called()
 
     controller = MainController()
     controller.run()
@@ -65,7 +66,7 @@ def test_update_run(mock_dependencies):
     mock_dependencies['mock_os'].path.exists.side_effect = [True, True, True] # outline.md, outline_history/, logs/
 
     with patch('src.main_controller.DiffEngine.detect_changes') as mock_diff:
-        mock_diff.return_value = {'added': [], 'modified': [], 'deleted': []}
+        mock_diff.return_value = {'added': [{'id': 'new', 'text': 'new data'}], 'modified': [], 'deleted': []}
 
         controller = MainController()
         controller.run()
@@ -78,6 +79,35 @@ def test_update_run(mock_dependencies):
         mock_dependencies['cache_manager'].save_cache.assert_called_once()
         # Check if history, outline, and log are written
         assert mock_dependencies['mock_file']().write.call_count == 2
-        mock_dependencies['mock_os'].rename.assert_called_once()
+        mock_dependencies['mock_os'].rename.assert_called_once() # outline.md should be renamed
         mock_dependencies['mock_file']().write.assert_any_call('Generated Outline')
         mock_dependencies['mock_file']().write.assert_any_call('Generated Log Content')
+
+
+@patch('sys.stdout', new_callable=MagicMock)
+def test_run_with_no_changes(mock_stdout, mock_dependencies):
+    """差分がない場合にAI生成がスキップされることをテストする"""
+    # Simulate existing cache and outline, and no changes
+    mock_dependencies['cache_manager'].load_cache.return_value = [{'id': '0', 'text': 'old data'}]
+    mock_dependencies['figma_client'].get_figma_objects.return_value = [{'id': '0', 'text': 'old data'}] # No changes
+    with patch('src.main_controller.DiffEngine.detect_changes') as mock_diff:
+        mock_diff.return_value = {'added': [], 'modified': [], 'deleted': []}
+        controller = MainController()
+        controller.run()
+
+        # Verification
+        mock_dependencies['figma_client'].get_figma_objects.assert_called_once()
+        mock_dependencies['cache_manager'].save_cache.assert_called_once() # Cache should still be updated
+        mock_dependencies['mock_genai'].GenerativeModel.return_value.generate_content.assert_not_called() # AI should not be called
+        mock_dependencies['mock_file']().write.assert_not_called() # No files should be written
+        mock_stdout.write.assert_any_call("No changes detected. Skipping AI generation.") # Check for specific message
+        # Verify all progress messages are called
+        expected_calls = [
+            call("Step 1/6: Loading context and preparing files..."),
+            call("\n"), # print adds a newline
+            call("Step 2/6: Fetching data from Figma API..."),
+            call("\n"), # print adds a newline
+            call("No changes detected. Skipping AI generation."),
+            call("\n"), # print adds a newline
+        ]
+        mock_stdout.write.assert_has_calls(expected_calls, any_order=True)

@@ -65,7 +65,8 @@ def test_generate_update_prompt(diff_data, old_outline):
 def test_generate_log_prompt_initial(structured_data):
     """ログ用プロンプト（初回実行時）が正しく生成されるかテストする"""
     prompt = PromptGenerator.generate_log_prompt(None, structured_data)
-    assert "あなたは研究アシスタントです。今回のFigJamボードの変更点と、それらが研究アウトラインにどのように反映されたかについて、以下の観点から日報形式でまとめてください。" in prompt
+    assert "今回のFigJamボードの変更点と、それが研究アウトラインにどのように反映されたかについて、以下の観点から日報形式でまとめる。" in prompt
+    assert "冗長な表現を避け、構造的かつ網羅的に記述すること。" in prompt
     assert "### 初回実行: ボード全体の概要" in prompt
     assert "- Idea A" in prompt
     assert "## 具体例と詳細" in prompt
@@ -76,7 +77,8 @@ def test_generate_log_prompt_initial(structured_data):
 def test_generate_log_prompt_update(diff_data, structured_data):
     """ログ用プロンプト（差分更新時）が正しく生成されるかテストする"""
     prompt = PromptGenerator.generate_log_prompt(diff_data, structured_data)
-    assert "あなたは研究アシスタントです。今回のFigJamボードの変更点と、それらが研究アウトラインにどのように反映されたかについて、以下の観点から日報形式でまとめてください。" in prompt
+    assert "今回のFigJamボードの変更点と、それが研究アウトラインにどのように反映されたかについて、以下の観点から日報形式でまとめる。" in prompt
+    assert "冗長な表現を避け、構造的かつ網羅的に記述すること。" in prompt
     assert "### 追加された要素:" in prompt
     assert "- New Idea" in prompt
     assert "### 変更された要素:" in prompt
