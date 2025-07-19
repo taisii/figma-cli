@@ -1,0 +1,6 @@
+pytest
+requests
+python-dotenv
+PyYAML
+google-generativeai
+ruff

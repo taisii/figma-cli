@@ -1,0 +1,24 @@
+# Environment variables
+.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# pytest cache
+.pytest_cache/
+
+# Generated files
+cache.json
+outline.md
+outline_history/
+logs/
+
+# Virtual environment
+virtualenv/
+virtualenvs/
+venv/
+env/
+
+# macOS specific
+.DS_Store
