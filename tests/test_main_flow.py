@@ -16,12 +16,16 @@ def mock_dependencies():
         mock_parser = MockStructureParser.return_value
         mock_parser.parse.return_value = {'clusters': [], 'connections': [], 'objects': []}
 
-        MockPromptGenerator.generate_initial_prompt.return_value = "Initial Prompt"
-        MockPromptGenerator.generate_update_prompt.return_value = "Update Prompt"
+        MockPromptGenerator.generate_initial_prompt.return_value = "Initial Outline"
+        MockPromptGenerator.generate_update_prompt.return_value = "Update Outline"
+        MockPromptGenerator.generate_log_prompt.return_value = "Generated Log Content"
 
-        mock_genai.GenerativeModel.return_value.generate_content.return_value.text = "Generated Outline"
+        mock_genai.GenerativeModel.return_value.generate_content.side_effect = [
+            MagicMock(text="Generated Outline"),
+            MagicMock(text="Generated Log Content")
+        ]
 
-        mock_yaml_load.return_value = {'color_tags': {}, 'clustering_threshold': 100}
+        mock_yaml_load.return_value = {'color_tags': {}, 'clustering_threshold': 100, 'gemini_model_name': 'gemini-pro'}
 
         yield {
             'figma_client': mock_figma_client,
@@ -46,10 +50,12 @@ def test_initial_run(mock_dependencies):
     mock_dependencies['figma_client'].get_figma_objects.assert_called_once()
     mock_dependencies['parser'].parse.assert_called_once()
     mock_dependencies['prompt_generator'].generate_initial_prompt.assert_called_once()
+    mock_dependencies['prompt_generator'].generate_log_prompt.assert_called_once()
     mock_dependencies['cache_manager'].save_cache.assert_called_once_with([{'id': '1', 'text': 'new data'}], 'cache.json')
     # Check if outline and log are written
     assert mock_dependencies['mock_file']().write.call_count == 2
     mock_dependencies['mock_file']().write.assert_any_call('Generated Outline')
+    mock_dependencies['mock_file']().write.assert_any_call('Generated Log Content')
 
 
 def test_update_run(mock_dependencies):
@@ -68,7 +74,10 @@ def test_update_run(mock_dependencies):
         mock_dependencies['figma_client'].get_figma_objects.assert_called_once()
         mock_diff.assert_called_once()
         mock_dependencies['prompt_generator'].generate_update_prompt.assert_called_once()
+        mock_dependencies['prompt_generator'].generate_log_prompt.assert_called_once()
         mock_dependencies['cache_manager'].save_cache.assert_called_once()
         # Check if history, outline, and log are written
         assert mock_dependencies['mock_file']().write.call_count == 2
         mock_dependencies['mock_os'].rename.assert_called_once()
+        mock_dependencies['mock_file']().write.assert_any_call('Generated Outline')
+        mock_dependencies['mock_file']().write.assert_any_call('Generated Log Content')

@@ -60,3 +60,27 @@ def test_generate_update_prompt(diff_data, old_outline):
     assert '"Idea A" -> "Idea A updated"' in prompt
     assert "削除された付箋:" in prompt
     assert "Idea C" in prompt
+
+
+def test_generate_log_prompt_initial(structured_data):
+    """ログ用プロンプト（初回実行時）が正しく生成されるかテストする"""
+    prompt = PromptGenerator.generate_log_prompt(None, structured_data)
+    assert "あなたは研究アシスタントです。今回のFigJamボードの変更点と、それらが研究アウトラインにどのように反映されたかについて、以下の観点から日報形式でまとめてください。" in prompt
+    assert "### 初回実行: ボード全体の概要" in prompt
+    assert "- Idea A" in prompt
+    assert "## 具体例と詳細" in prompt
+    assert "## 考慮事項と疑問点" in prompt
+    assert "## 進捗の要約" in prompt
+
+
+def test_generate_log_prompt_update(diff_data, structured_data):
+    """ログ用プロンプト（差分更新時）が正しく生成されるかテストする"""
+    prompt = PromptGenerator.generate_log_prompt(diff_data, structured_data)
+    assert "あなたは研究アシスタントです。今回のFigJamボードの変更点と、それらが研究アウトラインにどのように反映されたかについて、以下の観点から日報形式でまとめてください。" in prompt
+    assert "### 追加された要素:" in prompt
+    assert "- New Idea" in prompt
+    assert "### 変更された要素:" in prompt
+    assert 'ID [1:1]: "Idea A" -> "Idea A updated"' in prompt
+    assert "### 削除された要素:" in prompt
+    assert "- Idea C" in prompt
+    assert "## 具体例と詳細" in prompt

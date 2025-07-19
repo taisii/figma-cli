@@ -40,23 +40,32 @@ class MainController:
         # 3. プロンプト生成
         if old_objects is None or old_outline is None:
             # 初回実行
-            structured_data = self.structure_parser.parse(new_objects)
-            prompt = PromptGenerator.generate_initial_prompt(structured_data)
+            structured_data_for_outline = self.structure_parser.parse(new_objects)
+            prompt = PromptGenerator.generate_initial_prompt(structured_data_for_outline)
+            structured_data_for_log = structured_data_for_outline
+            diff_for_log = None
         else:
             # 差分更新
-            diff = DiffEngine.detect_changes(old_objects, new_objects)
-            prompt = PromptGenerator.generate_update_prompt(diff, old_outline)
+            diff_for_outline = DiffEngine.detect_changes(old_objects, new_objects)
+            prompt = PromptGenerator.generate_update_prompt(diff_for_outline, old_outline)
+            structured_data_for_log = self.structure_parser.parse(new_objects)
+            diff_for_log = diff_for_outline
 
-        # 4. AI実行
-        response = self.ai_model.generate_content(prompt)
-        new_outline = response.text
+        # 4. AI実行 (アウトライン生成)
+        response_outline = self.ai_model.generate_content(prompt)
+        new_outline = response_outline.text
+
+        # 4. AI実行 (ログ生成)
+        log_prompt = PromptGenerator.generate_log_prompt(diff_for_log, structured_data_for_log, old_outline)
+        response_log = self.ai_model.generate_content(log_prompt)
+        new_log_content = response_log.text
 
         # 5. 成果物保存
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if not os.path.exists("logs"):
             os.makedirs("logs")
         with open(f"logs/log_{timestamp}.md", "w") as f:
-            f.write(new_outline)
+            f.write(new_log_content)
         with open("outline.md", "w") as f:
             f.write(new_outline)
 
