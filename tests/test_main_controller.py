@@ -7,18 +7,18 @@ from src.main_controller import MainController
 
 @pytest.fixture
 def mock_dependencies():
-    with patch('src.main_controller.FigmaClient') as MockFigmaClient, \
-         patch('src.main_controller.StructureParser') as MockStructureParser, \
-         patch('src.main_controller.PromptGenerator') as MockPromptGenerator, \
-         patch('src.main_controller.CacheManager') as MockCacheManager, \
-         patch('src.main_controller.os') as mock_os, \
-         patch('src.main_controller.os.path') as mock_os_path, \
-         patch('builtins.open', new_callable=mock_open) as mock_file, \
-         patch('src.main_controller.yaml.safe_load') as mock_yaml_load, \
-         patch('src.main_controller.dotenv.load_dotenv'), \
-         patch('src.main_controller.generativeai') as mock_genai, \
-         patch('src.main_controller.DifyClient') as MockDifyClient, \
-         patch('src.main_controller.requests.post') as mock_requests_post:
+    with (
+        patch('src.main_controller.FigmaClient') as MockFigmaClient,
+        patch('src.main_controller.StructureParser') as MockStructureParser,
+        patch('src.main_controller.PromptGenerator') as MockPromptGenerator,
+        patch('src.main_controller.CacheManager') as MockCacheManager,
+        patch('src.main_controller.os') as mock_os,
+        patch('src.main_controller.os.path') as mock_os_path,
+        patch('builtins.open', new_callable=mock_open) as mock_file,
+        patch('src.main_controller.yaml.safe_load') as mock_yaml_load,
+        patch('src.main_controller.generativeai') as mock_genai,
+        patch('src.main_controller.DifyClient') as MockDifyClient,
+    ):
 
         # Setup mocks
         mock_figma_client = MockFigmaClient.return_value
@@ -54,8 +54,7 @@ def mock_dependencies():
             'mock_file': mock_file,
             'mock_genai': mock_genai,
             'dify_client': mock_dify_client,
-            'mock_os_path': mock_os_path,
-            'mock_requests_post': mock_requests_post
+            'mock_os_path': mock_os_path
         }
 
 
@@ -120,14 +119,17 @@ def test_update_run(mock_dependencies):
         mock_dependencies['cache_manager'].save_cache.assert_called_once()
         # Check if history, outline, and log are written
         assert mock_dependencies['mock_file']().write.call_count == 2
-        mock_dependencies['mock_os'].rename.assert_called_once() # outline.md should be renamed
-        mock_dependencies['mock_file']().write.assert_any_call('Generated Outline')
-        mock_dependencies['mock_file']().write.assert_any_call('New Daily Report Content')
+    mock_dependencies['mock_os'].rename.assert_called_once() # outline.md should be renamed
+    mock_dependencies['mock_file']().write.assert_any_call('Generated Outline')
+    mock_dependencies['mock_file']().write.assert_any_call('New Daily Report Content')
 
 
 @patch('sys.stdout', new_callable=MagicMock)
 def test_run_with_no_changes(mock_stdout, mock_dependencies):
     """差分がない場合にAI生成がスキップされることをテストする"""
+    # Mock os.getenv to enable debug logging for this test
+    mock_dependencies['mock_os'].getenv.side_effect = lambda key: "true" if key == "FIGMA_CLI_DEBUG_LOGGING" else None
+
     # Simulate existing cache and outline, and no changes
     mock_dependencies['cache_manager'].load_cache.return_value = [{'id': '0', 'text': 'old data'}]
     mock_dependencies['figma_client'].get_figma_objects.return_value = [{'id': '0', 'text': 'old data'}] # No changes
@@ -141,17 +143,15 @@ def test_run_with_no_changes(mock_stdout, mock_dependencies):
         mock_dependencies['cache_manager'].save_cache.assert_called_once() # Cache should still be updated
         mock_dependencies['mock_genai'].GenerativeModel.return_value.generate_content.assert_not_called() # AI should not be called
         mock_dependencies['mock_file']().write.assert_not_called() # No files should be written
-        mock_stdout.write.assert_any_call("No changes detected. Skipping AI generation.") # Check for specific message
+        mock_stdout.write.assert_any_call("No changes detected. Skipping AI generation.") # Check for specific message, print adds newline
         # Verify all progress messages are called
         expected_calls = [
-            call("Step 1/6: Loading context and preparing files..."),
-            call("\n"), # print adds a newline
-            call("Step 2/6: Fetching data from Figma API..."),
-            call("\n"), # print adds a newline
-            call("No changes detected. Skipping AI generation."),
-            call("\n"), # print adds a newline
+            call("Step 1/6: Loading context and preparing files..."), call("\n"),
+            call("Step 2/6: Fetching data from Figma API..."), call("\n"),
+            call("No changes detected. Skipping AI generation."), call("\n"),
         ]
         mock_stdout.write.assert_has_calls(expected_calls, any_order=True)
+
 
 def test_daily_report_uses_direct_gemini_api(mock_dependencies):
     """日報生成がGemini APIを直接利用し、Dify APIを利用しないことをテストする"""
@@ -180,6 +180,8 @@ def test_strategy_flag_triggers_strategy_cycle(mock_dependencies):
             main()
             instance.execute_strategy_cycle.assert_called_once()
 
+
+import requests # Added import for requests
 
 @patch.dict(os.environ, {"DIFY_API_KEY": "test_api_key", "DIFY_WORKFLOW_ID": "test_workflow_id"})
 @patch('requests.post')
@@ -225,19 +227,29 @@ def test_dify_client_invoke(mock_post):
 
 @patch.dict(os.environ, {"DIFY_API_KEY": "test_api_key", "DIFY_WORKFLOW_ID": "test_workflow_id"})
 @patch('requests.post')
-def test_dify_client_invoke_api_error(mock_post):
+def test_dify_client_invoke_api_error(mock_post, capsys): # Added capsys here
     """DifyClientがAPIエラーを適切に処理するかテストする"""
     from src.main_controller import DifyClient
 
     # Mock the error API response
     mock_response = MagicMock()
     mock_response.status_code = 400
-    mock_response.raise_for_status.side_effect = Exception("API Error")
+    mock_response.text = "Dify API Error: Invalid Request" # Ensure text is set for error body
+    mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("Bad Request")
     mock_post.return_value = mock_response
 
-    with pytest.raises(Exception, match="API Error"):
+    with pytest.raises(requests.exceptions.HTTPError):
+        os.environ["FIGMA_CLI_DEBUG_LOGGING"] = "true" # Force enable for this specific test
         client = DifyClient()
         client.invoke("Test Outline", "Test Logs")
+
+    # Check print statements using capsys
+    captured = capsys.readouterr()
+    assert "--- Dify API Request ---" in captured.out
+    assert "--- Dify API Error Response ---" in captured.out
+    assert "Status Code: 400" in captured.out
+    assert "Response Body: Dify API Error: Invalid Request" in captured.out
+
 
 def test_execute_strategy_cycle_orchestrates_correctly(mock_dependencies):
     """execute_strategy_cycleが正しく各モジュールを呼び出すかテストする"""
@@ -260,9 +272,11 @@ gemini_model_name: gemini-pro""").return_value, # 1. config.yaml in MainControll
     ]
 
     # We also need to mock dotenv separately to avoid file read order issues
-    with patch('src.main_controller.dotenv.load_dotenv') as mock_load_dotenv, \
+    with patch('dotenv.load_dotenv') as mock_load_dotenv, \
          patch('src.main_controller.FileIO.read_all_logs') as MockFileIOReadAllLogs:
-        MockFileIOReadAllLogs.return_value = "Test Logs"
+        # Make the returned log content longer than 5000 characters
+        long_log_content = "A" * 6000
+        MockFileIOReadAllLogs.return_value = long_log_content
 
         # DifyClient's mock is configured to return a simple string
         mock_dify_client.invoke.return_value = "Generated Strategy"
@@ -275,8 +289,31 @@ gemini_model_name: gemini-pro""").return_value, # 1. config.yaml in MainControll
         MockFileIOReadAllLogs.assert_called_once()
         # Verify that the prompt generator is no longer called
         mock_dependencies['prompt_generator'].generate_strategy_prompt.assert_not_called()
-        # Verify DifyClient's invoke was called with the correct arguments
-        mock_dify_client.invoke.assert_called_once_with("Test Outline", "Test Logs")
+        # Verify DifyClient's invoke was called with the correct arguments, including the full log content
+        mock_dify_client.invoke.assert_called_once_with("Test Outline", long_log_content) # Assert with long_log_content
         mock_os.makedirs.assert_called_once_with("output/proposals")
         # Assert that write was called on the specific mock handle
         mock_write_handle.write.assert_called_once_with("Generated Strategy")
+
+@pytest.mark.parametrize("debug_logging_enabled", [True, False])
+@patch('sys.stdout', new_callable=MagicMock)
+def test_main_controller_prompt_output_controlled_by_by_debug_logging(mock_stdout, mock_dependencies, debug_logging_enabled):
+    """MainControllerのプロンプト出力がFIGMA_CLI_DEBUG_LOGGING環境変数で制御されることをテストする"""
+    # Setup environment variable via mock_os.getenv
+    mock_dependencies['mock_os'].getenv.side_effect = lambda key: "true" if key == "FIGMA_CLI_DEBUG_LOGGING" and debug_logging_enabled else None
+
+    # Simulate existing cache and outline
+    mock_dependencies['cache_manager'].load_cache.return_value = None # No cache
+    mock_dependencies['mock_os'].path.exists.side_effect = [False, False] # outline.md, outline_history/
+
+    controller = MainController()
+    controller.run()
+
+    captured_output = "".join(call.args[0] for call in mock_stdout.write.call_args_list if call.args)
+
+    if debug_logging_enabled:
+        assert "--- Prompt for Outline Generation ---" in captured_output
+        assert "--- Prompt for Log Generation ---" in captured_output
+    else:
+        assert "--- Prompt for Outline Generation ---" not in captured_output
+        assert "--- Prompt for Log Generation ---" not in captured_output

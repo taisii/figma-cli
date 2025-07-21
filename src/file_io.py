@@ -13,3 +13,26 @@ class FileIO:
                     all_logs_content += f.read() + "\n\n"
         return all_logs_content
 
+    @staticmethod
+    def read_recent_logs(log_dir="logs", num_logs=10):
+        all_logs_content = ""
+        if not os.path.exists(log_dir):
+            return all_logs_content
+
+        log_files = []
+        for filename in os.listdir(log_dir):
+            if filename.endswith(".md"):
+                filepath = os.path.join(log_dir, filename)
+                log_files.append((filepath, os.path.getmtime(filepath)))
+
+        # Sort files by modification time, newest first
+        log_files.sort(key=lambda x: x[1], reverse=True)
+
+        # Read content of the most recent logs
+        for i, (filepath, _) in enumerate(log_files):
+            if i >= num_logs:
+                break
+            with open(filepath, "r") as f:
+                all_logs_content += f.read() + "\n\n"
+        return all_logs_content
+

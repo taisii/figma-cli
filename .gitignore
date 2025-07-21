@@ -13,6 +13,7 @@ cache.json
 outline.md
 outline_history/
 logs/
+output/
 
 # Virtual environment
 virtualenv/
