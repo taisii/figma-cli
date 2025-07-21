@@ -86,3 +86,20 @@ def test_generate_log_prompt_update(diff_data, structured_data):
     assert "### 削除された要素:" in prompt
     assert "- Idea C" in prompt
     assert "## 具体例と詳細" in prompt
+
+
+def test_generate_daily_report_prompt():
+    """日報プロンプトにUnresolved_Pointsセクションが含まれるかテストする"""
+    prompt = PromptGenerator.generate_daily_report_prompt("yesterday's log", "current outline")
+    assert "## Unresolved_Points" in prompt
+    assert "今日の作業で感じた小さな疑問や不確かな点" in prompt
+    assert "疑問に至った背景や文脈" in prompt
+
+def test_generate_strategy_prompt_is_structured_for_deepresearch():
+    """戦略提案プロンプトがDeepResearchに適した構造を持つかテストする"""
+    prompt = PromptGenerator.generate_strategy_prompt("Test Outline", "Test Logs")
+    assert "## 調査の背景" in prompt
+    assert "## 未解決の問い (Questions)" in prompt
+    assert "## 生成されるべき仮説 (Hypotheses)" in prompt
+    assert "## 調査すべきキーワード (Keywords)" in prompt
+
