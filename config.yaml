@@ -11,4 +11,16 @@ clustering_threshold: 100
 
 # Gemini API モデル名
 # 使用するGeminiモデルを指定します。例: "models/gemini-1.5-pro", "models/gemini-1.5-flash"
-gemini_model_name: "models/gemini-2.5-pro"
+gemini_model_name: "models/gemini-1.5-pro"
+
+# FigJam上の記法の意味定義
+figma_semantics:
+  # コネクター（矢印）の色が持つ意味
+  connector_colors:
+    "#ff0000": "因果関係を示唆する"
+    "#0000ff": "関連性を示唆する"
+    "#00ff00": "反証・対立関係を示す"
+  # 付箋のテキストに含まれるハッシュタグの意味
+  hashtags:
+    "#issue": "これは未解決の問い（Issue）である"
+    "#hypothesis": "これは検証すべき仮説（Hypothesis）である"

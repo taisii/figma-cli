@@ -1,91 +1,105 @@
 import os
 import yaml
 import dotenv
-import google.generativeai as generativeai
+import json
 from datetime import datetime
+
+# google.generativeai as generativeai
 
 from .figma_client import FigmaClient
 from .structure_parser import StructureParser
-from .prompt_generator import PromptGenerator
-from .cache_manager import CacheManager
-from .diff_engine import DiffEngine
+from .reference_manager import ReferenceManager
+# from .prompt_generator import PromptGenerator
+# from .cache_manager import CacheManager
+# from .diff_engine import DiffEngine
 
 class MainController:
     def __init__(self):
         dotenv.load_dotenv()
         with open("config.yaml", "r") as f:
             self.config = yaml.safe_load(f)
-        generativeai.configure(api_key=os.getenv("AI_API_KEY"))
+        # generativeai.configure(api_key=os.getenv("AI_API_KEY"))
 
         self.figma_client = FigmaClient()
         self.structure_parser = StructureParser(self.config)
-        self.ai_model = generativeai.GenerativeModel(self.config["gemini_model_name"])
+        self.reference_manager = ReferenceManager()
+        # self.ai_model = generativeai.GenerativeModel(self.config["gemini_model_name"])
+
+        # 出力ディレクトリの準備
+        self.context_dir = "context"
+        os.makedirs(self.context_dir, exist_ok=True)
 
     def run(self):
-        print("Step 1/6: Loading context and preparing files...")
-        # 1. コンテキスト読込 & 旧アウトライン退避
-        old_objects = CacheManager.load_cache("cache.json")
-        old_outline = None
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # timestampをここで定義
-        if os.path.exists("outline.md"):
-            with open("outline.md", "r") as f:
-                old_outline = f.read()
+        print("Phase 1: Parsing core information sources...")
 
-        print("Step 2/6: Fetching data from Figma API...")
-        # 2. Figmaデータ取得
-        new_objects = self.figma_client.get_figma_objects()
+        # 1. Figmaからデータを取得し、解析する
+        print("  - Fetching and parsing FigJam data...")
+        figma_objects = self.figma_client.get_figma_objects()
+        parsed_figma_data = self.structure_parser.parse(figma_objects)
 
-        # 6. キャッシュ更新 (早期リターン前に実行)
-        CacheManager.save_cache(new_objects, "cache.json")
+        # 2. 参考文献ディレクトリからデータを読み込む
+        print("  - Reading references...")
+        references = self.reference_manager.read_references("references")
 
-        # 差分検出
-        if old_objects is not None:
-            diff_for_outline = DiffEngine.detect_changes(old_objects, new_objects)
-            # 差分がない場合は早期リターン
-            if not (diff_for_outline["added"] or diff_for_outline["modified"] or diff_for_outline["deleted"]):
-                print("No changes detected. Skipping AI generation.")
-                return
-            prompt = PromptGenerator.generate_update_prompt(diff_for_outline, old_outline)
-            structured_data_for_log = self.structure_parser.parse(new_objects)
-            diff_for_log = diff_for_outline
+        # 3. コンテキストファイルを生成する
+        print("  - Generating context files...")
+        self._generate_structured_data(parsed_figma_data)
+        self._generate_figma_snapshot(parsed_figma_data)
+
+        # (フェーズ2以降で実装)
+        # self._update_research_log(parsed_figma_data, references)
+        # self._update_issues_and_hypotheses(parsed_figma_data)
+        # self._generate_next_actions()
+
+        print("\nPhase 1 completed successfully.")
+        print(f"Context files generated in '{self.context_dir}' directory.")
+
+    def _generate_structured_data(self, parsed_data):
+        """03_STRUCTURED_DATA.jsonを生成する"""
+        path = os.path.join(self.context_dir, "03_STRUCTURED_DATA.json")
+        try:
+            # JSONシリアライズ不可能なオブジェクトをフィルタリング
+            serializable_data = self._make_serializable(parsed_data)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(serializable_data, f, indent=2, ensure_ascii=False)
+            print(f"    - Generated {path}")
+        except TypeError as e:
+            print(f"Error serializing data for {path}: {e}")
+
+    def _make_serializable(self, data):
+        """JSONシリアライズのために再帰的にデータを変換する"""
+        if isinstance(data, dict):
+            return {key: self._make_serializable(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._make_serializable(element) for element in data]
+        # ここに他の非シリアライズ可能型の処理を追加できる
+        return data
+
+    def _generate_figma_snapshot(self, parsed_data):
+        """02_FIGJAM_SNAPSHOT.mdを生成する"""
+        path = os.path.join(self.context_dir, "02_FIGJAM_SNAPSHOT.md")
+        content = "# FigJam Snapshot\n\n"
+
+        content += "## Clusters\n\n"
+        if parsed_data.get("clusters"):
+            for i, cluster in enumerate(parsed_data["clusters"]):
+                content += f"### Cluster {i+1}\n"
+                for obj in cluster:
+                    content += f"- {obj.get('text', '[No Text]')} (ID: {obj.get('id')})\n"
+                content += "\n"
         else:
-            # 初回実行
-            structured_data_for_outline = self.structure_parser.parse(new_objects)
-            prompt = PromptGenerator.generate_initial_prompt(structured_data_for_outline)
-            structured_data_for_log = structured_data_for_outline
-            diff_for_log = None
+            content += "No clusters found.\n\n"
 
-        print("Step 3/6: Generating AI prompts for outline...")
-        # 3. プロンプト生成
-        # (プロンプト生成ロジックは上記で移動済み)
-
-        print("Step 4/6: Generating research outline with AI...")
-        print("--- Prompt for Outline Generation ---")
-        print(prompt)
-        print("-------------------------------------")
-        # 4. AI実行 (アウトライン生成)
-        response_outline = self.ai_model.generate_content(prompt)
-        new_outline = response_outline.text
-
-        log_prompt = PromptGenerator.generate_log_prompt(diff_for_log, structured_data_for_log, old_outline)
-        print("Step 5/6: Generating daily log with AI...")
-        print("--- Prompt for Log Generation ---")
-        print(log_prompt)
-        print("-----------------------------------")
-        # 4. AI実行 (ログ生成)
-        response_log = self.ai_model.generate_content(log_prompt)
-        new_log_content = response_log.text
-
-        print("Step 6/6: Saving generated files and updating cache...")
-        # 5. 成果物保存
-        if os.path.exists("outline.md"):
-            if not os.path.exists("outline_history"):
-                os.makedirs("outline_history")
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            os.rename("outline.md", f"outline_history/outline_{timestamp}.md")
-        with open(f"logs/log_{timestamp}.md", "w") as f:
-            f.write(new_log_content)
-        with open("outline.md", "w") as f:
-            f.write(new_outline)
-
-        print("Outline generated successfully.")
+        content += "## Connections\n\n"
+        if parsed_data.get("connections"):
+            for conn in parsed_data["connections"]:
+                start_id = conn.get('start_node_id', 'N/A')
+                end_id = conn.get('end_node_id', 'N/A')
+                tags = ", ".join(conn.get('semantic_tags', []))
+                content += f"- {start_id} -> {end_id} (Tags: {tags if tags else 'None'})\n"
+        else:
+            content += "No connections found.\n\n"
+        
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"    - Generated {path}")
