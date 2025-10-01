@@ -1,76 +1,41 @@
-# LLM開発者向けコンテキストガイド
+# LLM 開発者向けコンテキストガイド
 
 ## 1. プロジェクトの目的
 
-このリポジトリは、FigJamボード上の情報をAIを用いて解釈し、構造化されたマークダウン形式の**研究アウトライン**と**日報（ログ）**を自動生成するCLIツールです。
-
----
+このリポジトリは Codex CLI を通じて研究用 PDF を取り込み、Nougat による Markdown 化を自動化し、必要に応じて Gemini で要約を生成するツールです。生成されたファイルは `context/` に保存され、Codex セッションのコンテキストとして読み込めます。
 
 ## 2. ディレクトリ構造
 
-主要なファイルとディレクトリの役割は以下の通りです。
-
 ```
 /
-├── .env                 # APIキーなどの環境変数 (Git管理外)
-├── config.yaml          # 色とタグのマッピング、クラスタリング閾値などのツール設定
-├── run.py               # アプリケーションのメインエントリーポイント
-├── cache.json           # 前回のFigmaボード状態を保存するキャッシュ (Git管理外)
-├── outline.md           # AIによって生成された最新のアウトライン (Git管理外)
-├── outline_history/     # 過去のアウトラインのバックアップ (Git管理外)
-├── logs/                # AIの出力ログ (Git管理外)
-├── src/                 # ソースコードディレクトリ
-│   ├── main_controller.py # 全体の処理フローを制御する司令塔
-│   ├── figma_client.py  # Figma APIとの通信を担当
-│   ├── structure_parser.py # Figmaオブジェクトの構造(位置,色,接続)を解釈
-│   ├── diff_engine.py   # 前回の実行状態との差分を検出
-│   ├── prompt_generator.py # AIに渡すプロンプトを生成
-│   └── cache_manager.py # `cache.json`の読み書きを管理
-└── tests/               # テストコードディレクトリ
-    └── test_*.py        # src/ 内の各モジュールと1対1で対応するテストファイル
+├── codex_cli.py          # Codex CLI コマンド (`ingest pdf`, `summarize paper`)
+├── run.py                # Codex CLI へのフォワード
+├── config.yaml           # Gemini と PDF 取り込みの設定
+├── context/              # 生成された Markdown / サマリー / メタデータ
+├── src/
+│   ├── llm_client.py     # Gemini クライアントの初期化
+│   └── pdf_ingestor.py   # Nougat 変換とオンデマンド LLM サマリー
+├── doc/                  # 設計ドキュメント
+└── requirements.txt
 ```
 
----
+## 3. 処理フロー
 
-## 3. アーキテクチャとデータフロー
+1. ユーザーが `python codex_cli.py ingest pdf <path>` を実行。
+2. `PDFIngestor` が PDF を `context/papers/raw/` にコピーし、Nougat CLI で Markdown (`paper.md`) を生成。
+3. 同モジュールが PDF メタデータを抽出し、保存先スラッグと `metadata.yaml` を作成。
+4. 必要になったタイミングで `python codex_cli.py summarize paper <slug>` を実行すると、Gemini を呼び出して `summary.md` を生成。
+5. `context/index.yaml` を更新し、取り込み結果を一覧化。
 
-本ツールは、`MainController`を司令塔とするモジュール分割アーキテクチャを採用しています。ユーザーが `python run.py` を実行した際のデータフローは以下の通りです。
+## 4. コーディング上の注意
 
-1.  **起動**: `run.py` が `MainController` の `run` メソッドを呼び出します。
-2.  **コンテキスト読込**: `MainController` は `cache.json` (前回状態) と `outline.md` (前回アウトライン) を読み込みます。
-3.  **データ取得**: `FigmaClient` がFigma APIを叩き、最新のボード情報を取得します。
-4.  **キャッシュ更新**: 取得した最新情報は、すぐに `CacheManager` によって `cache.json` に保存されます。
-5.  **差分検出**: `DiffEngine` が、手順2で読み込んだ前回状態と手順3で取得した最新情報を比較し、差分（追加、変更、削除）を特定します。
-6.  **プロンプト生成**:
-    - **初回実行時**: `StructureParser` がボード全体を解析し、その結果を `PromptGenerator` が「初回実行用プロンプト」に整形します。
-    - **差分更新時**: `DiffEngine` が検出した差分情報を `PromptGenerator` が「差分更新用プロンプト」に整形します。
-7.  **AI実行**: `MainController` が生成されたプロンプトをGoogle Generative AI APIに送信し、**アウトライン**と**ログ**の2種類の結果を受け取ります。
-8.  **成果物保存**: `MainController` が、生成されたアウトラインを `outline.md` に、ログを `logs/` ディレクトリに保存します。古いアウトラインは `outline_history/` に退避させます。
+- Gemini への接続は `src/llm_client.py` を経由する。
+- Nougat CLI の結果は UTF-8 Markdown として扱う。
+- 要約生成はオンデマンドで行い、必要なときだけ LLM を呼び出す。
+- 追加のデータソースを取り込む場合は、新しいサブコマンドとして CLI を拡張する。
 
----
+## 5. 今後の拡張候補
 
-## 4. 開発スタイル: テスト駆動開発 (TDD)
-
-このプロジェクトでは、品質と保守性を高めるために厳格なテスト駆動開発（TDD）を採用しています。新しい機能を追加・変更する際は、以下の手順を必ず守ってください。
-
-### TDDワークフロー
-
-1.  **Step 1: 要件分析とテスト設計**
-    - 追加したい機能が `src/` 内のどのモジュールの責務かを判断します。
-    - その機能の振る舞いを検証するためのテストケースを具体的に考えます。（例：「オブジェクトのサイズでタグ付けする」→ `StructureParser`の責務）
-
-2.  **Step 2: 失敗するテストの作成 (Red)**
-    - 対応する `tests/test_*.py` ファイルに、新しいテスト関数を追加します。
-    - このテストは、まだ機能が実装されていないため、`pytest` を実行すると**必ず失敗(FAIL)します**。
-
-3.  **Step 3: テストをパスする最小限の実装 (Green)**
-    - `src/*.py` ファイルに、Step 2のテストが**成功(PASS)するためだけの最小限のコード**を実装します。
-    - まずはテストをパスさせることを最優先し、コードの綺麗さは気にしません。
-
-4.  **Step 4: リファクタリング (Refactor)**
-    - すべてのテストが成功している状態を維持しながら、コードの可読性や効率を改善します。
-    - リファクタリングの前後で `pytest` を実行し、何も壊していないことを確認します。
-
-5.  **Step 5: 最終確認**
-    - `pytest` を実行し、すべてのテストが成功することを確認します。
-    - `ruff check .` と `ruff format .` を実行し、コードスタイルが規約に沿っていることを確認します。
+- FigJam など他ソースの自動取り込み
+- 要約スタイルのバリエーション（ショート/ロング）
+- 取り込み結果からのベクトル検索

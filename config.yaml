@@ -1,26 +1,14 @@
-# 色とタグのマッピング定義
-# Figmaで取得した色の16進数コードと、それに対応するタグ名を記述します。
-# 例: "#ff0000": "重要"
-color_tags:
-  "#ff0000": "重要"
-  "#0000ff": "疑問点"
-
-# クラスタリングの閾値
-# この値が小さいほど、より近くにあるオブジェクト同士がグループ化されます。
-clustering_threshold: 100
-
 # Gemini API モデル名
 # 使用するGeminiモデルを指定します。例: "models/gemini-1.5-pro", "models/gemini-1.5-flash"
 gemini_model_name: "models/gemini-1.5-pro"
 
-# FigJam上の記法の意味定義
-figma_semantics:
-  # コネクター（矢印）の色が持つ意味
-  connector_colors:
-    "#ff0000": "因果関係を示唆する"
-    "#0000ff": "関連性を示唆する"
-    "#00ff00": "反証・対立関係を示す"
-  # 付箋のテキストに含まれるハッシュタグの意味
-  hashtags:
-    "#issue": "これは未解決の問い（Issue）である"
-    "#hypothesis": "これは検証すべき仮説（Hypothesis）である"
+# PDF 取り込みに関する設定
+pdf_ingest:
+  # PDF を投函する生ファイル置き場
+  raw_dir: "context/papers/raw"
+  # Nougat 変換後の Markdown やサマリを配置するディレクトリ
+  processed_dir: "context/papers"
+  # 索引ファイルの配置先
+  index_path: "context/index.yaml"
+  # Gemini に渡す本文の最大文字数
+  summary_max_chars: 12000

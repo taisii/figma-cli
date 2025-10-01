@@ -1,140 +1,70 @@
-# 研究支援 CLI ツール
+# 研究支援 Codex CLI
 
 ## 概要
 
-このツールは、Figma社のオンラインホワイトボードツール「FigJam」上のブレインストーミング内容を、生成AIを活用して解釈・構造化し、マークダウン形式の研究アウトラインを半自動で生成・更新することを目的としたCLIツールです。
+このリポジトリは Codex CLI から利用する軽量なリサーチ支援ツールです。PDF 論文を Nougat で Markdown 化し、必要に応じて Gemini でサマリーを生成するためのパイプラインを提供します。まず論文を `paper.md` に変換し、Codex セッションや追加コマンドからサマリー生成を呼び出すことで、利用したいタイミングだけ API コストを支払う運用ができます。
 
-研究活動におけるアイデア整理からアウトライン作成までの時間と労力を削減し、研究者がより本質的な思考や実験に集中できる環境を提供します。
+## 主な機能
 
-## 機能
+- **PDF 取り込み (`codex ingest pdf`)**: 指定した PDF を `context/papers/<slug>/` にコピーし、Nougat で `paper.md` を生成します。
+- **オンデマンド要約 (`codex summarize paper`)**: 変換した Markdown を読み込み、必要になったタイミングで Gemini が日本語サマリー (`summary.md`) を作成します。
+- **メタデータ管理**: 取り込み結果は `metadata.yaml` と `context/index.yaml` に記録され、後から CLI で参照できます。
 
--   **FigJam ボードの読込機能**: 指定された FigJam ボードの URL から、API 経由でオブジェクト（付箋、テキスト、コネクター等）の情報を取得します。
--   **コンテンツの構造解釈機能**: 取得したオブジェクトの位置情報からクラスタリング（グループ化）を、色情報からユーザー定義のタグを抽出し、接続関係（矢印）と合わせてアイデアの論理構造を解釈します。
--   **AI によるアウトライン生成**: 解釈した構造とテキスト情報をコンテキストとして生成 AI に渡し、階層化されたマークダウン形式のアウトラインを生成します。初回実行と差分更新の両方に対応します。
--   **差分更新機能**: 前回の実行時と比較して、FigJam ボード上の変更点を検出し、その差分情報のみを AI に伝えてアウトラインを効率的に更新します。
--   **成果物のバージョン管理機能**: ツール実行時に、更新前の公式アウトライン (`outline.md`) を `outline_history/` フォルダに自動でバックアップし、変更履歴を保存します。
--   **実行ログの保存機能**: AI の生出力結果を、実行ごとにタイムスタンプ付きのファイルとして `logs/` フォルダに保存し、デバッグや思考プロセスの追跡を可能にします。
+## セットアップ
 
-## はじめに
-
-### 前提条件
-
--   Python 3.9+ がインストールされていること。
--   `pip` が利用可能であること。
--   Figma API トークンと対象の FigJam ボードの URL。
--   Google Cloud の Gemini API キー。
-
-### インストール
-
-1.  リポジトリをクローンします。
-    ```bash
-    git clone https://github.com/taisii/figma-cli
-    cd figma-cli
-    ```
-
-2.  必要なライブラリをインストールします。
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-### 設定
-
-本ツールを実行する前に、以下の設定ファイルを用意する必要があります。
-
-1.  **`.env` ファイルの作成**
-    プロジェクトのルートディレクトリに `.env` ファイルを作成し、以下の環境変数を設定してください。
-    ```dotenv
-    FIGMA_API_TOKEN=YOUR_FIGMA_API_TOKEN
-    FIGJAM_BOARD_URL=YOUR_FIGJAM_BOARD_URL
-    AI_API_KEY=YOUR_GEMINI_API_KEY
-    ```
-    -   `YOUR_FIGMA_API_TOKEN`: [Figma Personal Access Tokens](https://www.figma.com/developers/api#access-tokens) から取得できます。
-    -   `YOUR_FIGJAM_BOARD_URL`: 対象となる FigJam ボードのURLです。
-    -   `YOUR_GEMINI_API_KEY`: [Google AI Studio](https://aistudio.google.com/app/apikey) などから取得できる Gemini API キーです。
-
-2.  **`config.yaml` の設定**
-    `config.yaml` ファイルで、色とタグのマッピングやクラスタリングの閾値、使用するGeminiモデルを設定できます。
-    ```yaml
-    # 色とタグのマッピング定義
-    # Figmaで取得した色の16進数コードと、それに対応するタグ名を記述します。
-    # 例: "#ff0000": "重要"
-    color_tags:
-      "#ff0000": "重要"
-      "#0000ff": "疑問点"
-
-    # クラスタリングの閾値
-    # この値が小さいほど、より近くにあるオブジェクト同士がグループ化されます。
-    clustering_threshold: 100
-
-    # Gemini API モデル名
-    # 使用するGeminiモデルを指定します。例: "models/gemini-1.5-pro", "models/gemini-1.5-flash"
-    gemini_model_name: "models/gemini-1.5-pro"
-    ```
+1. 依存関係をインストールします。
+   ```bash
+   python -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+2. `.env` に Gemini API キーを設定します。
+   ```dotenv
+   AI_API_KEY=your_gemini_api_key
+   ```
+3. Nougat CLI をローカルにインストールし、`nougat` コマンドが利用できる状態にします。
 
 ## 使い方
 
-設定が完了したら、以下のコマンドでツールを実行できます。
-
-```bash
-python run.py
-```
-
-初回実行時には、FigJam ボード全体からアウトラインが生成されます。2回目以降の実行では、前回の状態との差分が検出され、効率的にアウトラインが更新されます。
+1. PDF を `context/papers/raw/` に置くか、コマンドの引数にファイルパスを指定します。
+2. Codex CLI で取り込みを実行します。
+   ```bash
+   python codex_cli.py ingest pdf path/to/paper.pdf
+   # raw ディレクトリ内の未処理 PDF を一括変換する場合
+   python codex_cli.py ingest pdf
+   ```
+3. 必要なときにサマリーを生成します。
+   ```bash
+   python codex_cli.py summarize paper <slug>
+   # 既存サマリーを再生成する場合
+   python codex_cli.py summarize paper <slug> --force
+   ```
+4. 生成結果は `context/papers/<slug>/` に配置されます。
+   - `paper.md`: Nougat による Markdown 変換結果
+   - `summary.md`: Gemini による構造化サマリー（必要な時に生成）
+   - `metadata.yaml`: タイトル・著者・元 PDF パスなど
 
 ## プロジェクト構造
 
 ```
 figma-cli/
-├── .env                 # 環境変数 (APIキーなど)
-├── .gitignore           # Git管理から除外するファイルの設定
-├── config.yaml          # ツール設定ファイル (色マッピング、クラスタリング閾値、AIモデル名など)
-├── requirements.txt     # Pythonの依存ライブラリリスト
-├── run.py               # メイン実行スクリプト
-├── cache.json           # FigJamボードの前回状態を保存するキャッシュファイル
-├── outline.md           # 現在の最新版となる公式アウトライン
-├── outline_history/     # 過去の公式アウトラインのバックアップが保存されるディレクトリ
-│   └── (例: 2025-07-19_10-45.md)
-├── logs/                # AIの生出力が実行ごとに保存されるディレクトリ
-│   └── (例: 2025-07-19_10-45_raw.md)
-├── src/                 # ソースコード
+├── codex_cli.py          # Codex CLI のエントリーポイント
+├── config.yaml           # Gemini と PDF 取り込みの設定
+├── context/              # 生成されたドキュメントの保存先
+├── run.py                # Codex CLI へのフォワード用エントリーポイント
+├── src/
 │   ├── __init__.py
-│   ├── cache_manager.py # キャッシュの読み書きを管理
-│   ├── diff_engine.py   # FigJamボードの差分を検出
-│   ├── figma_client.py  # Figma APIとの連携
-│   ├── main_controller.py # アプリケーションのメインロジック
-│   ├── prompt_generator.py # AIプロンプトの生成
-│   └── structure_parser.py # Figmaオブジェクトの構造解釈
-└── tests/               # テストコード
-    ├── test_cache_manager.py
-    ├── test_diff_engine.py
-    ├── test_figma_client.py
-    ├── test_main_flow.py
-    ├── test_prompt_generator.py
-    ├── test_structure_parser.py
-    └── dummy_response.json # Figma APIテスト用のダミーレスポンス
+│   ├── llm_client.py     # Gemini クライアントの共通設定
+│   └── pdf_ingestor.py   # Nougat 変換とオンデマンド要約
+└── requirements.txt
 ```
 
-## 開発者向け
+## コマンド補助
 
-### テストの実行
+- `python run.py ...` で従来どおり実行しても、内部的に Codex CLI にフォワードされます。
+- `python codex_cli.py --help` で利用可能なオプションを確認できます（`--force`、`--llm-model`、`--nougat-model` など）。
 
-本プロジェクトはテスト駆動開発 (TDD) のアプローチで開発されています。各機能のテストは `pytest` を使用して実行できます。
+## 開発メモ
 
-```bash
-pytest
-```
-
-特定のテストファイルのみを実行することも可能です。
-
-```bash
-pytest tests/test_figma_client.py
-```
-
-### コードスタイル
-
-コードの整形には `ruff` を使用しています。変更を加えた際は、以下のコマンドでコードスタイルを確認・修正できます。
-
-```bash
-ruff check .
-ruff format .
-```
+- LLM 設定は `config.yaml` と `.env` から読み込みます。Gemini を利用できない場合でも、サマリーは抜粋にフォールバックします。
+- 生成物は再生成可能なので、手動で編集する場合はバックアップを取ってから行ってください。
+- 将来的に FigJam や他のデータソースを統合する際は、別ブランチで段階的に追加してください。

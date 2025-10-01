@@ -1,14 +1,16 @@
 #!/usr/bin/env python
 
-from src.main_controller import MainController
+"""Backwards-compatible entrypoint that forwards to Codex CLI."""
 
-def main():
-    """アプリケーションのメインエントリーポイント"""
-    try:
-        controller = MainController()
-        controller.run()
-    except Exception as e:
-        print(f"An error occurred: {e}")
+import sys
+
+from codex_cli import main as codex_main
+
+
+def main() -> int:
+    """Delegate execution to the Codex CLI."""
+    return codex_main()
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
