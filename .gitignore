@@ -17,7 +17,11 @@ logs/
 # Virtual environment
 virtualenv/
 virtualenvs/
-venv/
+.venv/
+context/index.yaml
+context/papers/**
+!context/papers/.gitkeep
+context/papers/raw/
 env/
 
 # macOS specific
