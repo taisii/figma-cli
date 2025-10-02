@@ -4,3 +4,4 @@ PyYAML
 google-generativeai
 ruff
 pypdf
+pylatexenc

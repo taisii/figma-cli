@@ -2,35 +2,35 @@
 
 ## 1. プロジェクトの目的
 
-このリポジトリは Codex CLI を通じて研究用 PDF を取り込み、Nougat による Markdown 化を自動化し、必要に応じて Gemini で要約を生成するツールです。生成されたファイルは `context/` に保存され、Codex セッションのコンテキストとして読み込めます。
+このリポジトリは Codex CLI を通じて研究用 PDF / TeX プロジェクトを取り込み、Markdown 化とメタデータ整備を自動化し、必要に応じて Gemini で要約を生成するツールです。生成されたファイルは `context/` に保存され、Codex セッションのコンテキストとして読み込めます。
 
 ## 2. ディレクトリ構造
 
 ```
 /
-├── codex_cli.py          # Codex CLI コマンド (`ingest pdf`, `summarize paper`)
+├── codex_cli.py          # Codex CLI コマンド (`ingest pdf`, `ingest tex`, `summarize paper`)
 ├── run.py                # Codex CLI へのフォワード
-├── config.yaml           # Gemini と PDF 取り込みの設定
+├── config.yaml           # Gemini とドキュメント取り込みの設定
 ├── context/              # 生成された Markdown / サマリー / メタデータ
 ├── src/
 │   ├── llm_client.py     # Gemini クライアントの初期化
-│   └── pdf_ingestor.py   # Nougat 変換とオンデマンド LLM サマリー
+│   └── document_ingestor.py   # PDF/TeX の前処理とオンデマンド LLM サマリー
 ├── doc/                  # 設計ドキュメント
 └── requirements.txt
 ```
 
 ## 3. 処理フロー
 
-1. ユーザーが `python codex_cli.py ingest pdf <path>` を実行。
-2. `PDFIngestor` が PDF を `context/papers/raw/` にコピーし、Nougat CLI で Markdown (`paper.md`) を生成。
-3. 同モジュールが PDF メタデータを抽出し、保存先スラッグと `metadata.yaml` を作成。
+1. ユーザーが `python codex_cli.py ingest pdf <path>` または `python codex_cli.py ingest tex <dir>` を実行。
+2. `DocumentIngestor` がソースを `context/papers/raw/` にコピーし、PDF の場合はテキスト抽出、TeX の場合は（`latexpand`/`pandoc` があれば活用しながら）Markdown (`paper.md`) を生成。
+3. 同モジュールが書誌情報・マクロ定義・チャンク情報を抽出し、保存先スラッグと `metadata.yaml` / `macros.md` / `chunks/` を作成。
 4. 必要になったタイミングで `python codex_cli.py summarize paper <slug>` を実行すると、Gemini を呼び出して `summary.md` を生成。
 5. `context/index.yaml` を更新し、取り込み結果を一覧化。
 
 ## 4. コーディング上の注意
 
 - Gemini への接続は `src/llm_client.py` を経由する。
-- Nougat CLI の結果は UTF-8 Markdown として扱う。
+- TeX プロジェクト取り込み時はマクロ・チャンクを補足し、Markdown は UTF-8 で保存する。
 - 要約生成はオンデマンドで行い、必要なときだけ LLM を呼び出す。
 - 追加のデータソースを取り込む場合は、新しいサブコマンドとして CLI を拡張する。
 

@@ -2,11 +2,11 @@
 # 使用するGeminiモデルを指定します。例: "models/gemini-1.5-pro", "models/gemini-1.5-flash"
 gemini_model_name: "models/gemini-1.5-pro"
 
-# PDF 取り込みに関する設定
-pdf_ingest:
-  # PDF を投函する生ファイル置き場
+# ドキュメント取り込みに関する設定 (PDF / TeX 共通)
+document_ingest:
+  # ソースを置く生ファイル置き場
   raw_dir: "context/papers/raw"
-  # Nougat 変換後の Markdown やサマリを配置するディレクトリ
+  # 生成された Markdown やサマリを配置するディレクトリ
   processed_dir: "context/papers"
   # 索引ファイルの配置先
   index_path: "context/index.yaml"

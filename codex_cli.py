@@ -4,10 +4,11 @@
 import argparse
 import sys
 from pathlib import Path
+from typing import List, Optional
 
 import yaml
 
-from src.pdf_ingestor import PDFIngestor, PDFIngestionError
+from src.document_ingestor import DocumentIngestor, DocumentIngestionError
 
 
 def load_config() -> dict:
@@ -20,12 +21,7 @@ def load_config() -> dict:
 
 def ingest_pdf_command(args: argparse.Namespace) -> int:
     config = load_config()
-    ingestion_cfg = config.setdefault("pdf_ingest", {})
-
-    if args.nougat_model:
-        ingestion_cfg["nougat_model"] = args.nougat_model
-
-    ingestor = PDFIngestor(config, llm_model_override=args.llm_model)
+    ingestor = DocumentIngestor(config, llm_model_override=args.llm_model)
 
     try:
         if args.path:
@@ -51,14 +47,14 @@ def ingest_pdf_command(args: argparse.Namespace) -> int:
         if results:
             print("Use 'python codex_cli.py summarize paper <slug>' to generate summaries when needed.")
         return 0
-    except PDFIngestionError as exc:
+    except DocumentIngestionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
 
 def summarize_paper_command(args: argparse.Namespace) -> int:
     config = load_config()
-    ingestor = PDFIngestor(config)
+    ingestor = DocumentIngestor(config)
 
     try:
         summary_path = ingestor.ensure_summary(
@@ -68,7 +64,30 @@ def summarize_paper_command(args: argparse.Namespace) -> int:
         )
         print(f"Generated summary: {summary_path}")
         return 0
-    except PDFIngestionError as exc:
+    except DocumentIngestionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+def ingest_tex_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    ingestor = DocumentIngestor(config, llm_model_override=args.llm_model)
+
+    try:
+        result = ingestor.ingest_tex_folder(
+            Path(args.path),
+            root_file=args.root,
+            force=args.force,
+            copy_to_raw=not args.no_copy,
+            slug=args.slug,
+        )
+        print(result.message)
+        print(f"  paper:   {result.paper_path}")
+        print(f"  summary (pending): {result.summary_path}")
+        print(f"  meta:    {result.metadata_path}")
+        print(f"  source:  {result.source_path}")
+        return 0
+    except DocumentIngestionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
@@ -82,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pdf_parser = ingest_subparsers.add_parser(
         "pdf",
-        help="Convert a PDF to Markdown via Nougat and generate an LLM summary",
+        help="Convert a PDF to Markdown and generate related artifacts",
     )
     pdf_parser.add_argument("path", nargs="?", help="Path to the PDF file. If omitted, process all PDFs in the raw inbox.")
     pdf_parser.add_argument("--slug", help="Explicit slug name for the ingested paper.")
@@ -93,14 +112,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the PDF in-place instead of copying it into the raw inbox.",
     )
     pdf_parser.add_argument(
-        "--nougat-model",
-        help="Optional Nougat model specifier passed to the nougat CLI.",
-    )
-    pdf_parser.add_argument(
         "--llm-model",
         help="Gemini model id override for summary generation.",
     )
     pdf_parser.set_defaults(func=ingest_pdf_command)
+
+    tex_parser = ingest_subparsers.add_parser(
+        "tex",
+        help="Convert a TeX project into Markdown and related artifacts.",
+    )
+    tex_parser.add_argument("path", help="Path to the TeX project directory.")
+    tex_parser.add_argument("--root", help="Entry-point TeX filename if autodetection fails.")
+    tex_parser.add_argument("--slug", help="Explicit slug name for the ingested project.")
+    tex_parser.add_argument("--force", action="store_true", help="Overwrite existing ingested content with the same slug.")
+    tex_parser.add_argument(
+        "--no-copy",
+        action="store_true",
+        help="Use the TeX project in-place instead of copying it into the raw inbox.",
+    )
+    tex_parser.add_argument(
+        "--llm-model",
+        help="Gemini model id override for summary generation.",
+    )
+    tex_parser.set_defaults(func=ingest_tex_command)
 
     summarize_parser = subparsers.add_parser(
         "summarize",
@@ -127,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
