@@ -1,7 +1,4 @@
 pytest
-python-dotenv
 PyYAML
 ruff
-pypdf
-pylatexenc
 docling
