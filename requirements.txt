@@ -1,7 +1,6 @@
 pytest
 python-dotenv
 PyYAML
-google-generativeai
 ruff
 pypdf
 pylatexenc

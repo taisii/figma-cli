@@ -1,4 +1,7 @@
 import os
+from types import SimpleNamespace
+
+import pytest
 
 
 def test_initializes_conversation_log(monkeypatch, tmp_path):
@@ -40,35 +43,93 @@ def test_generate_session_summary(monkeypatch, tmp_path):
     from src import session_manager
 
     timestamps = iter([
+        "2025-10-02T08:30:00Z",
         "2025-10-02T09:00:00Z",
         "2025-10-02T10:00:00Z",
     ])
 
     monkeypatch.setattr(session_manager, "current_timestamp", lambda: next(timestamps))
 
-    manager = session_manager.SessionManager(tmp_path)
+    run_calls = []
+
+    def fake_run(command, *, input, capture_output, text, encoding, check, env):
+        run_calls.append(
+            {
+                "command": command,
+                "input": input,
+                "env": env,
+                "capture_output": capture_output,
+                "text": text,
+                "encoding": encoding,
+                "check": check,
+            }
+        )
+        return SimpleNamespace(returncode=0, stdout="## サマリー\n- 実験の論点を整理\n", stderr="")
+
+    monkeypatch.setattr(session_manager.subprocess, "run", fake_run)
+
+    manager = session_manager.SessionManager(tmp_path, summary_command=["codex", "prompt", "session-summary"])
     manager.record_user_message("Discuss the experiment")
-
-    prompts = []
-
-    class DummyResponse:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class DummyModel:
-        def generate_content(self, parts):
-            prompts.append(parts)
-            return DummyResponse("Concise summary")
-
-    manager.model = DummyModel()
 
     block = manager.generate_session_summary()
 
-    assert "Concise summary" in block
-    assert prompts[0][-1] == "Discuss the experiment"
+    assert "## サマリー" in block
+    assert run_calls[0]["command"] == ["codex", "prompt", "session-summary"]
+    assert "- [2025-10-02T09:00:00Z] USER: Discuss the experiment" in run_calls[0]["input"]
+    assert run_calls[0]["env"]["CODEX_SESSION_MESSAGE_COUNT"] == "1"
     log_content = manager.conversation_log_path.read_text(encoding="utf-8")
-    assert log_content.endswith("Concise summary\n\n")
+    assert log_content.endswith("## サマリー\n- 実験の論点を整理\n\n")
     assert manager.messages == []
+
+
+def test_generate_session_summary_handles_non_zero_exit(monkeypatch, tmp_path):
+    from src import session_manager
+
+    timestamps = iter([
+        "2025-10-02T08:30:00Z",
+        "2025-10-02T09:00:00Z",
+        "2025-10-02T10:00:00Z",
+    ])
+
+    monkeypatch.setattr(session_manager, "current_timestamp", lambda: next(timestamps))
+    manager = session_manager.SessionManager(tmp_path, summary_command=["codex", "prompt", "session-summary"])
+
+    manager.record_user_message("Need summary")
+
+    def fake_run(command, *, input, capture_output, text, encoding, check, env):  # noqa: ARG001
+        return SimpleNamespace(returncode=1, stdout="", stderr="failed")
+
+    monkeypatch.setattr(session_manager.subprocess, "run", fake_run)
+
+    with pytest.raises(session_manager.SessionCommandError) as excinfo:
+        manager.generate_session_summary()
+
+    assert "exit 1" in str(excinfo.value)
+
+
+def test_generate_session_summary_handles_empty_output(monkeypatch, tmp_path):
+    from src import session_manager
+
+    timestamps = iter([
+        "2025-10-02T08:30:00Z",
+        "2025-10-02T09:00:00Z",
+        "2025-10-02T10:00:00Z",
+    ])
+
+    monkeypatch.setattr(session_manager, "current_timestamp", lambda: next(timestamps))
+    manager = session_manager.SessionManager(tmp_path, summary_command=["codex", "prompt", "session-summary"])
+
+    manager.record_user_message("Need summary")
+
+    def fake_run(command, *, input, capture_output, text, encoding, check, env):  # noqa: ARG001
+        return SimpleNamespace(returncode=0, stdout="   \n", stderr="")
+
+    monkeypatch.setattr(session_manager.subprocess, "run", fake_run)
+
+    with pytest.raises(session_manager.SessionCommandError) as excinfo:
+        manager.generate_session_summary()
+
+    assert "空の出力" in str(excinfo.value)
 
 
 def test_list_documents_sorted_by_mtime(monkeypatch, tmp_path):

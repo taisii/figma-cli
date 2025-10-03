@@ -1,6 +1,4 @@
-# Gemini API モデル名
-# 使用するGeminiモデルを指定します。例: "models/gemini-1.5-pro", "models/gemini-1.5-flash"
-gemini_model_name: "models/gemini-1.5-pro"
+# Codex CLI 共通設定
 
 # ドキュメント取り込みに関する設定 (PDF / TeX 共通)
 document_ingest:
@@ -26,3 +24,11 @@ session_manager:
   auto_preload: true
   # 自動ロードする最大件数 (None 相当で制限なし)
   preload_limit: 200
+  # 会話要約に利用する Codex コマンド
+  summary_command:
+    - "codex"
+    - "prompt"
+    - "session-summary"
+  # 必要に応じて環境変数を追加する場合は summary_env に記載してください。
+  # summary_env:
+  #   CODEX_SESSION_TITLE: "研究ログ"

@@ -17,7 +17,7 @@
    python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
    ```
-2. `.codex/prompts/summary.md` にサマリー用のプロンプトを整備します（テンプレートを自由に調整できます）。
+2. `.codex/prompts/summary.md` と `.codex/prompts/session_summary.md` にプロンプトを整備します（テンプレートを自由に調整できます）。
 3. 必要に応じて Docling OCR モデルをローカルにインストールし、`docling` の変換が実行できる状態にします。
 
 ## 使い方
@@ -45,25 +45,26 @@
 ```
 figma-cli/
 ├── codex_cli.py          # Codex CLI のエントリーポイント
-├── config.yaml           # Gemini と PDF 取り込みの設定
+├── config.yaml           # Codex プロンプトと PDF 取り込みの設定
 ├── context/              # 生成されたドキュメントと要約の保存先
 │   ├── papers/
 │   └── summaries/
 ├── run.py                # Codex CLI へのフォワード用エントリーポイント
 ├── src/
-│   ├── __init__.py
-│   ├── llm_client.py     # 会話要約などで利用する Gemini クライアント
-│   └── document_ingestor.py   # Docling 変換と Codex プロンプトを使った要約生成
+│   ├── convert.py        # Docling を利用した PDF→Markdown ユーティリティ
+│   ├── summarize.py      # Codex プロンプトで Markdown を要約するユーティリティ
+│   ├── session_manager.py   # 会話ログ管理と Codex コマンド呼び出し
+│   └── document_ingestor.py # Docling 変換と Codex プロンプトを使った要約生成
 └── requirements.txt
 ```
 
 ## コマンド補助
 
 - `python run.py ...` で従来どおり実行しても、内部的に Codex CLI にフォワードされます。
-- `python codex_cli.py --help` で利用可能なオプションを確認できます（`--force`、`--llm-model`、`--nougat-model` など）。
+- `python codex_cli.py --help` で利用可能なオプションを確認できます（`--force`、`--nougat-model` など）。
 
 ## 開発メモ
 
-- LLM 設定は `config.yaml` と `.env` から読み込みます。Gemini を利用できない場合でも、サマリーは抜粋にフォールバックします。
+- Codex 関連の設定は `config.yaml` と `.env` から読み込みます。必要に応じて `.codex/prompts/` 配下のプロンプトを調整してください。
 - 生成物は再生成可能なので、手動で編集する場合はバックアップを取ってから行ってください。
 - 将来的に FigJam や他のデータソースを統合する際は、別ブランチで段階的に追加してください。

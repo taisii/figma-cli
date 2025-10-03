@@ -10,7 +10,7 @@
 /
 ├── codex_cli.py              # Codex CLI コマンド (`ingest pdf`, `ingest tex`, `summarize paper`)
 ├── run.py                    # Codex CLI へのフォワード
-├── config.yaml               # Gemini とドキュメント取り込みの設定
+├── config.yaml               # Codex プロンプトとドキュメント取り込みの設定
 ├── context/                  # 既存 Codex CLI が参照する知識ベース
 │   ├── papers/               # 本文とメタデータ
 │   └── summaries/            # 要約の集約先
@@ -22,7 +22,6 @@
 │   ├── convert.py            # Docling を利用して PDF→Markdown を行うユーティリティ
 │   ├── summarize.py          # Codex プロンプトで Markdown を要約するユーティリティ
 │   ├── session_manager.py    # CLI ラッパー（/list /load /reset /summary）
-│   ├── llm_client.py         # 会話サマリー用 Gemini クライアントの初期化
 │   └── document_ingestor.py  # Codex CLI から呼ばれる取り込みロジック
 ├── doc/                  # 設計ドキュメント
 └── requirements.txt
@@ -33,12 +32,12 @@
 1. ユーザーが `python codex_cli.py ingest pdf <path>` または `python codex_cli.py ingest tex <dir>` を実行し、従来どおり `DocumentIngestor` が `context/papers/` に成果物を格納する。
 2. より軽量なワークフローが必要な場合は `python -m src.convert --input data/raw/papers/example.pdf` で Docling による Markdown を生成する。
 3. 要約が必要になったら `python -m src.summarize --input data/generated/example.md` を実行し、Codex プロンプトでサマリーを作成する。
-4. セッションを管理したい場合は `AI_API_KEY=... python -m src.session_manager --knowledge-dir context/summaries` を起動し、`/summary` で会話ログへ追記する。
+4. セッションを管理したい場合は `AI_API_KEY=... python -m src.session_manager --knowledge-dir context/summaries` を起動し、`/summary` で Codex コマンド（`.codex/prompts/session_summary.md`）を使って会話ログへ追記する。
 5. 生成された Markdown / サマリーを Codex CLI や他ツールへコンテキストとして提供する。
 
 ## 4. コーディング上の注意
 
-- Gemini への接続が必要な処理（会話サマリーなど）は必ず `src/llm_client.py` を経由する。
+- Codex コマンドを呼び出す処理では、`session_manager` や `document_ingestor` が一貫して `subprocess.run` を利用するため、副作用をテストでモックして制御する。
 - Docling は初回実行時に OCR モデルをダウンロードするため、CI ではモックを用意し、ユニットテストでは `DocumentConverter` を差し替える。
 - TeX プロジェクト取り込みは従来どおり `DocumentIngestor` が担当する。Docling への統合はロードマップ項目です。
 - 追加のデータソースを取り込む場合は、新しいサブコマンドやモジュールを追加し、`tests/` に対応するテストを書く。

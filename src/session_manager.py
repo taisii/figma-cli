@@ -4,21 +4,21 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import dotenv
 import yaml
-
-from .llm_client import LLMUnavailableError, build_generative_model
 
 
 DEFAULT_KNOWLEDGE_DIR = Path("context/summaries")
 CONVERSATION_LOG_NAME = "conversation_log.md"
 REQUIRED_CODEX_VERSION = (0, 5, 0)
+DEFAULT_SUMMARY_COMMAND = ["codex", "prompt", "session-summary"]
 
 
 class SessionCommandError(Exception):
@@ -31,6 +31,13 @@ class ListEntry:
     path: Path
     missing_summary: bool = False
     mtime: float = field(repr=False, compare=False, default=0.0)
+
+
+@dataclass
+class SessionMessage:
+    role: str
+    content: str
+    timestamp: str
 
 
 def current_timestamp() -> str:
@@ -52,9 +59,10 @@ class SessionManager:
         self,
         knowledge_dir: Path = DEFAULT_KNOWLEDGE_DIR,
         *,
-        model=None,
         auto_preload: bool = False,
         preload_limit: Optional[int] = None,
+        summary_command: Optional[Sequence[str]] = None,
+        summary_env: Optional[Dict[str, str]] = None,
     ) -> None:
         self.knowledge_dir = Path(knowledge_dir)
         self.knowledge_dir.mkdir(parents=True, exist_ok=True)
@@ -62,9 +70,10 @@ class SessionManager:
         self.conversation_log_path = self.knowledge_dir / CONVERSATION_LOG_NAME
         self._ensure_conversation_log()
 
-        self.model = model
         self.active_documents: List[Path] = []
-        self.messages: List[str] = []
+        self.messages: List[SessionMessage] = []
+        self.summary_command = self._normalize_command(summary_command)
+        self.summary_env = dict(summary_env or {})
 
         if auto_preload:
             self._auto_preload(preload_limit)
@@ -90,6 +99,49 @@ class SessionManager:
         if preload_limit is not None and preload_limit >= 0:
             summaries = summaries[: preload_limit]
         self.active_documents = summaries
+
+    @staticmethod
+    def _normalize_command(command: Optional[Sequence[str]]) -> List[str]:
+        if command is None:
+            return list(DEFAULT_SUMMARY_COMMAND)
+        if isinstance(command, (list, tuple)):
+            normalized = [str(part) for part in command if str(part).strip()]
+        else:
+            value = str(command).strip()
+            normalized = [value] if value else []
+        return normalized
+
+    def _build_prompt_payload(self) -> str:
+        lines = ["# Conversation Log"]
+        for message in self.messages:
+            content = message.content.replace("\r\n", "\n").strip()
+            if not content:
+                continue
+            first_line, *rest = content.splitlines()
+            lines.append(f"- [{message.timestamp}] {message.role}: {first_line}")
+            for line in rest:
+                lines.append(f"  {line.strip()}")
+        if len(lines) == 1:
+            raise SessionCommandError("要約対象の会話がありません。")
+
+        if self.active_documents:
+            lines.append("")
+            lines.append("# Active Summaries")
+            for path in self.active_documents:
+                lines.append(f"- {path.name}")
+
+        return "\n".join(lines)
+
+    def _build_subprocess_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env.update(self.summary_env)
+        env.setdefault("CODEX_SESSION_KNOWLEDGE_DIR", str(self.knowledge_dir))
+        env.setdefault("CODEX_SESSION_LOG_PATH", str(self.conversation_log_path))
+        env.setdefault("CODEX_SESSION_MESSAGE_COUNT", str(len(self.messages)))
+        if self.active_documents:
+            active = ",".join(sorted(path.name for path in self.active_documents))
+            env.setdefault("CODEX_SESSION_ACTIVE_DOCUMENTS", active)
+        return env
 
     def list_documents(self) -> List[ListEntry]:
         entries: List[ListEntry] = []
@@ -124,26 +176,55 @@ class SessionManager:
     def record_user_message(self, message: str) -> None:
         text = message.strip()
         if text:
-            self.messages.append(text)
+            self.messages.append(
+                SessionMessage(role="USER", content=text, timestamp=current_timestamp())
+            )
+
+    def record_assistant_message(self, message: str) -> None:
+        text = message.strip()
+        if text:
+            self.messages.append(
+                SessionMessage(role="ASSISTANT", content=text, timestamp=current_timestamp())
+            )
 
     def generate_session_summary(self) -> str:
         if not self.messages:
             raise SessionCommandError("要約対象の会話がありません。")
-        if self.model is None:
-            raise SessionCommandError("LLM モデルが未設定です。")
+        if not self.summary_command:
+            raise SessionCommandError("要約コマンドが未設定です。")
 
-        conversation = "\n".join(self.messages)
-        prompt = (
-            "You are a research collaborator. Summarize the following conversation into "
-            "actionable research notes."
-        )
-        response = self.model.generate_content([prompt, conversation])
-        summary_text = getattr(response, "text", "").strip()
+        payload = self._build_prompt_payload()
+        env = self._build_subprocess_env()
+
+        try:
+            result = subprocess.run(
+                self.summary_command,
+                input=payload,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise SessionCommandError(
+                f"要約コマンドが見つかりません: {self.summary_command[0]}"
+            ) from exc
+        except Exception as exc:  # pragma: no cover - subprocess の予期しない失敗
+            raise SessionCommandError(f"要約コマンドの実行に失敗しました: {exc}") from exc
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            raise SessionCommandError(
+                f"要約コマンドが異常終了しました (exit {result.returncode}): {stderr}"
+            )
+
+        summary_text = (result.stdout or "").strip()
         if not summary_text:
-            raise SessionCommandError("LLM が空のサマリーを返しました。")
+            raise SessionCommandError("要約コマンドが空の出力を返しました。")
 
         timestamp = current_timestamp()
-        block = f"{timestamp} {summary_text}"
+        block = f"{timestamp}\n{summary_text}"
         with self.conversation_log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"{block}\n\n")
 
@@ -186,10 +267,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="知識ベースディレクトリ (既定: 設定値または context/summaries)",
     )
-    parser.add_argument(
-        "--model",
-        help="Gemini モデル ID の上書き値",
-    )
     return parser
 
 
@@ -227,7 +304,8 @@ def _interactive_loop(manager: SessionManager) -> int:
                     print("コンテキストを初期化しました。")
                 elif command == "/summary":
                     block = manager.generate_session_summary()
-                    print(f"要約を conversation_log.md に追記しました: {block}")
+                    print("要約を conversation_log.md に追記しました。")
+                    print(block)
                 elif command in {"/exit", "/quit"}:
                     break
                 else:
@@ -250,7 +328,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         _ensure_codex_cli_version()
         if not os.getenv("AI_API_KEY"):
-            raise SessionCommandError("AI_API_KEY が設定されていません。")
+            raise SessionCommandError(
+                "AI_API_KEY が設定されていません。Codex コマンドの認証に必要です。"
+            )
 
         config = load_config()
         session_cfg = config.get("session_manager", {})
@@ -273,20 +353,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 preload_limit = int(preload_limit_cfg)
             except (TypeError, ValueError) as exc:
                 raise SessionCommandError("session_manager.preload_limit は整数で指定してください。") from exc
+        summary_command_cfg = session_cfg.get("summary_command")
+        if isinstance(summary_command_cfg, str):
+            summary_command_value: Optional[Sequence[str]] = [summary_command_cfg]
+        else:
+            summary_command_value = summary_command_cfg
 
-        model = build_generative_model(config, model_name_override=args.model)
+        summary_env_cfg = session_cfg.get("summary_env")
+        summary_env: Optional[Dict[str, str]]
+        if isinstance(summary_env_cfg, dict):
+            summary_env = {str(key): str(value) for key, value in summary_env_cfg.items()}
+        else:
+            summary_env = None
 
         manager = SessionManager(
             knowledge_dir,
-            model=model,
             auto_preload=auto_preload,
             preload_limit=preload_limit,
+            summary_command=summary_command_value,
+            summary_env=summary_env,
         )
         return _interactive_loop(manager)
     except SessionCommandError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-    except LLMUnavailableError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:  # pragma: no cover - 想定外の例外
