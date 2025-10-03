@@ -2,40 +2,46 @@
 
 ## 1. プロジェクトの目的
 
-このリポジトリは Codex CLI を通じて研究用 PDF / TeX プロジェクトを取り込み、Markdown 化とメタデータ整備を自動化し、必要に応じて Gemini で要約を生成するツールです。生成されたファイルは `context/` に保存され、Codex セッションのコンテキストとして読み込めます。
+このリポジトリは Codex CLI と補助スクリプトを通じて研究用 PDF / TeX プロジェクトを取り込み、Docling で Markdown 化とメタデータ整備を行い、必要に応じて Gemini で要約を生成するツールです。生成されたファイルは `context/` や `data/generated/` に保存され、Codex セッションのコンテキストとして読み込めます。
 
 ## 2. ディレクトリ構造
 
 ```
 /
-├── codex_cli.py          # Codex CLI コマンド (`ingest pdf`, `ingest tex`, `summarize paper`)
-├── run.py                # Codex CLI へのフォワード
-├── config.yaml           # Gemini とドキュメント取り込みの設定
-├── context/              # 生成された Markdown / サマリー / メタデータ
+├── codex_cli.py              # Codex CLI コマンド (`ingest pdf`, `ingest tex`, `summarize paper`)
+├── run.py                    # Codex CLI へのフォワード
+├── config.yaml               # Gemini とドキュメント取り込みの設定
+├── context/                  # 既存 Codex CLI が参照する知識ベース
+├── data/
+│   ├── input/                # ローカルの PDF 配置先（Git 管理対象外）
+│   └── generated/            # Docling / サマリーの出力先（Git 管理対象外）
 ├── src/
-│   ├── llm_client.py     # Gemini クライアントの初期化
-│   └── document_ingestor.py   # PDF/TeX の前処理とオンデマンド LLM サマリー
+│   ├── convert.py            # Docling を利用して PDF→Markdown を行うユーティリティ
+│   ├── summarize.py          # Gemini で Markdown を要約するユーティリティ
+│   ├── session_manager.py    # CLI ラッパー（/list /load /reset /summary）
+│   ├── llm_client.py         # Gemini クライアントの初期化
+│   └── document_ingestor.py  # Codex CLI から呼ばれる既存の取り込みロジック
 ├── doc/                  # 設計ドキュメント
 └── requirements.txt
 ```
 
 ## 3. 処理フロー
 
-1. ユーザーが `python codex_cli.py ingest pdf <path>` または `python codex_cli.py ingest tex <dir>` を実行。
-2. `DocumentIngestor` がソースを `context/papers/raw/` にコピーし、PDF の場合はテキスト抽出、TeX の場合は（`latexpand`/`pandoc` があれば活用しながら）Markdown (`paper.md`) を生成。
-3. 同モジュールが書誌情報・マクロ定義・チャンク情報を抽出し、保存先スラッグと `metadata.yaml` / `macros.md` / `chunks/` を作成。
-4. 必要になったタイミングで `python codex_cli.py summarize paper <slug>` を実行すると、Gemini を呼び出して `summary.md` を生成。
-5. `context/index.yaml` を更新し、取り込み結果を一覧化。
+1. ユーザーが `python codex_cli.py ingest pdf <path>` または `python codex_cli.py ingest tex <dir>` を実行し、従来どおり `DocumentIngestor` が `context/papers/` に成果物を格納する。
+2. より軽量なワークフローが必要な場合は `python -m src.convert --input data/input/example.pdf` で Docling による Markdown を生成する。
+3. 要約が必要になったら `AI_API_KEY=... python -m src.summarize --input data/generated/example.md` を実行し、タイムスタンプ付きサマリーを作成する。
+4. セッションを管理したい場合は `AI_API_KEY=... python -m src.session_manager --knowledge-dir data/generated` を起動し、`/summary` で会話ログへ追記する。
+5. 生成された Markdown / サマリーを Codex CLI や他ツールへコンテキストとして提供する。
 
 ## 4. コーディング上の注意
 
-- Gemini への接続は `src/llm_client.py` を経由する。
-- TeX プロジェクト取り込み時はマクロ・チャンクを補足し、Markdown は UTF-8 で保存する。
-- 要約生成はオンデマンドで行い、必要なときだけ LLM を呼び出す。
-- 追加のデータソースを取り込む場合は、新しいサブコマンドとして CLI を拡張する。
+- Gemini への接続は必ず `src/llm_client.py` を経由する。
+- Docling は初回実行時に OCR モデルをダウンロードするため、CI ではモックを用意し、ユニットテストでは `DocumentConverter` を差し替える。
+- TeX プロジェクト取り込みは従来どおり `DocumentIngestor` が担当する。Docling への統合はロードマップ項目です。
+- 追加のデータソースを取り込む場合は、新しいサブコマンドやモジュールを追加し、`tests/` に対応するテストを書く。
 
 ## 5. 今後の拡張候補
 
-- FigJam など他ソースの自動取り込み
+- Docling を用いた直接取り込みを Codex CLI 内に統合
 - 要約スタイルのバリエーション（ショート/ロング）
-- 取り込み結果からのベクトル検索
+- 生成結果に対するベクトル検索や RAG ワークフローへの展開

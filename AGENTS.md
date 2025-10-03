@@ -3,7 +3,15 @@
 # リポジトリガイドライン
 
 ## プロジェクト構成とモジュール整理
-Codex CLI 用のコマンドは `codex_cli.py` に集約されています。`run.py` は後方互換のため Codex CLI へ実行をフォワードします。`src/` 配下は最小構成で、`llm_client.py` が Gemini クライアントの初期化、`pdf_ingestor.py` が Nougat 変換とオンデマンド要約処理を担います。生成された知識は `context/papers/<slug>/` に `paper.md`・`metadata.yaml`（必要に応じて `summary.md`）のセットで保存され、索引は `context/index.yaml` に記録されます。
+Codex CLI 用のエントリーポイントは `codex_cli.py` に集約されており、`run.py` は後方互換のために CLI をフォワードします。現在のコアモジュールは以下の通りです。
+
+- `src/convert.py`: Docling を用いて PDF を Markdown に変換する単体ユーティリティ。`python -m src.convert` で直接利用できます。
+- `src/summarize.py`: 変換済み Markdown を Gemini で要約し、ISO8601 タイムスタンプ付きで出力します。
+- `src/session_manager.py`: 生成されたサマリー・会話ログを読み込み、`/list` `/load` `/reset` `/summary` などのカスタムコマンドを扱う CLI ラッパー。
+- `src/llm_client.py`: Gemini クライアントの初期化を共通化します。`build_generative_model` を介してモデルを取得してください。
+- `src/document_ingestor.py`: 既存の Codex CLI コマンド (`ingest pdf` / `ingest tex`) から呼ばれる取り込み処理。将来的に Docling ベースへ移行予定ですが、現状は PDF/TeX の一括処理に利用します。
+
+生成された Markdown とメタデータは `context/papers/<slug>/` に `paper.md`・`metadata.yaml`（必要に応じて `summary.md`）のセットで保存され、索引は `context/index.yaml` に記録されます。テスト用データや生成物は `data/input/`・`data/generated/` に配置しますが、リポジトリでは `.gitignore` 済みです。
 
 ## ビルド・テスト・開発コマンド
 作業前に仮想環境と依存関係をセットアップしてください。
@@ -11,7 +19,7 @@ Codex CLI 用のコマンドは `codex_cli.py` に集約されています。`ru
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
-PDF 取り込みと要約生成は Codex CLI から行います。
+PDF 取り込みと要約生成は Codex CLI もしくは個別ユーティリティから行います。
 ```
 python codex_cli.py ingest pdf path/to/paper.pdf
 # raw ディレクトリの未処理 PDF をまとめて処理する場合
@@ -19,6 +27,12 @@ python codex_cli.py ingest pdf
 
 # 要約が必要になったタイミングで呼び出す
 python codex_cli.py summarize paper <slug>
+
+# Docling を使って単独で PDF→Markdown したい場合
+python -m src.convert --input data/input/example.pdf --output-dir data/generated
+
+# Gemini で Markdown を要約したい場合
+AI_API_KEY=... python -m src.summarize --input data/generated/example.md
 ```
 `--force` で既存スラッグの上書きやサマリー再生成、`--llm-model` / `--nougat-model` で利用モデルを切り替えられます。実行ログに出力されるパスを Codex セッションのコンテキストとして利用してください。
 
@@ -26,14 +40,14 @@ python codex_cli.py summarize paper <slug>
 Python は 4 スペースインデント、必要に応じて型ヒントを追加します。モジュールはスネークケース、クラスはパスカルケースに統一し、副作用を持つロジックは極力薄いラッパーに留めてテスタブルな関数へ分解してください。Gemini へのアクセスは `llm_client.build_generative_model` を通じて共通化します。
 
 ## テスト指針
-現在は PDF インジェスト周りのユニットテストが未整備です。新機能を追加した際は `tests/` 配下に `test_<対象>.py` を作成し、`subprocess.run` や LLM 呼び出しをモックして副作用を制御してください。提出前には最低でも以下を実行することを推奨します。
+各モジュールのユニットテストは `tests/test_convert.py`・`tests/test_summarize.py`・`tests/test_session_manager.py` に実装されています。新機能を追加した際は `tests/` 配下に `test_<対象>.py` を作成し、Docling や Gemini 呼び出しはモックして副作用を制御してください。提出前には最低でも以下を実行することを推奨します。
 ```
 python -m pytest --maxfail=1 --disable-warnings -q
 ruff check .
 ```
 
 ## コミット・プルリクエスト指針
-コミットメッセージは Conventional Commits (`feat(cli): ...`, `refactor: ...`, `docs: ...` など) を採用してください。PR では変更概要・期待される挙動・必要な設定 (`AI_API_KEY`, Nougat の導入手順など) を記載し、`summary.md` や `metadata.yaml` の例を添付するとレビューがスムーズです。
+コミットメッセージは Conventional Commits (`feat(cli): ...`, `refactor: ...`, `docs: ...` など) を採用してください。PR では変更概要・期待される挙動・必要な設定 (`AI_API_KEY`, Docling のモデルダウンロード、Nougat 等の補助ツール) を記載し、`summary.md` や `metadata.yaml` の例を添付するとレビューがスムーズです。
 
 ## セキュリティと設定上の注意
 Gemini API キーは `.env` に保存し、履歴やレビューコメントに含めないでください。`config.yaml` は小さな値でも変更したらドキュメントに反映し、再現性を保ちます。生成された Markdown には機密情報が含まれる可能性があるため、共有時は必要に応じて編集した上で配布してください。
