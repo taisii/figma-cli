@@ -21,11 +21,18 @@ virtualenvs/
 context/index.yaml
 context/papers/**
 !context/papers/.gitkeep
-context/papers/raw/
+context/notes/**
+!context/notes/.gitkeep
+context/web/**
+!context/web/.gitkeep
+context/summaries/**
+!context/summaries/.gitkeep
+context/.index/
 env/
 
 # Local data
-data/input/
+data/raw/
+data/staging/
 data/generated/
 
 # macOS specific

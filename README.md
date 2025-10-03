@@ -1,70 +1,59 @@
-# 研究支援 Codex CLI
+# 研究支援ツール（純粋ツール構成）
 
-## 概要
+## 目的
 
-このリポジトリは Codex CLI から利用する軽量なリサーチ支援ツールです。PDF 論文を Nougat で Markdown 化し、必要に応じて Gemini でサマリーを生成するためのパイプラインを提供します。まず論文を `paper.md` に変換し、Codex セッションや追加コマンドからサマリー生成を呼び出すことで、利用したいタイミングだけ API コストを支払う運用ができます。
+単一の Codex CLI（会話エンジン）が起動時に本リポジトリの「ツール関数」を直接呼び出せるようにし、研究の相棒として論文コンテキストの読み出し・保存・索引更新を行う。ここでは LLM/API を一切呼び出さず、純粋なファイル操作のみを提供する。
 
-## 主な機能
+## 提供機能（Python ツール関数）
 
-- **PDF 取り込み (`codex ingest pdf`)**: 指定した PDF を `context/papers/<slug>/` にコピーし、Nougat で `paper.md` を生成します。
-- **オンデマンド要約 (`codex summarize paper`)**: 変換した Markdown を読み込み、必要になったタイミングで Gemini が日本語サマリー (`summary.md`) を作成します。
-- **メタデータ管理**: 取り込み結果は `metadata.yaml` と `context/index.yaml` に記録され、後から CLI で参照できます。
+- `src/tools/research.py`
+  - `list_papers(config=None) -> list[dict]`
+    - `context/papers/<slug>/` を走査して論文一覧を返す。
+  - `load_paper(slug, max_chars=None, config=None) -> dict`
+    - `paper.md` を読み出し、必要なら文字数制限して返す。
+  - `save_summary(slug, content, tags=None, config=None) -> dict`
+    - `summary.md` を保存し、`context/summaries/papers/<slug>.md` の別名同期、`index.yaml` と `summaries/index.json` を更新。
 
-## セットアップ
+加えて、PDF→Markdown 変換ユーティリティを同梱しています（LLM 非依存）。
+- `src/convert.py`（Docling ベース）
+  - CLI: `python -m src.convert --input path/to/paper.pdf --output-dir data/generated` 
+  - 出力: `data/generated/<name>.md`
 
-1. 依存関係をインストールします。
-   ```bash
-   python -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-2. `.env` に Gemini API キーを設定します。
-   ```dotenv
-   AI_API_KEY=your_gemini_api_key
-   ```
-3. Nougat CLI をローカルにインストールし、`nougat` コマンドが利用できる状態にします。
+要約の生成自体は Codex CLI のプロンプト（例: `.codex/prompts/summary.md`）で行い、本ツールは結果の永続化のみを担当する。
 
-## 使い方
+## 使い方（例）
 
-1. PDF を `context/papers/raw/` に置くか、コマンドの引数にファイルパスを指定します。
-2. Codex CLI で取り込みを実行します。
-   ```bash
-   python codex_cli.py ingest pdf path/to/paper.pdf
-   # raw ディレクトリ内の未処理 PDF を一括変換する場合
-   python codex_cli.py ingest pdf
-   ```
-3. 必要なときにサマリーを生成します。
-   ```bash
-   python codex_cli.py summarize paper <slug>
-   # 既存サマリーを再生成する場合
-   python codex_cli.py summarize paper <slug> --force
-   ```
-4. 生成結果は `context/papers/<slug>/` に配置されます。
-   - `paper.md`: Nougat による Markdown 変換結果
-   - `summary.md`: Gemini による構造化サマリー（必要な時に生成）
-   - `metadata.yaml`: タイトル・著者・元 PDF パスなど
+Codex CLI のツール実行から Python 関数を呼べる設定で、下記のように利用します。
 
-## プロジェクト構造
+1. `load_paper(slug)` で本文を取得 → CLI 側のプロンプトで要約生成。
+2. 生成テキストを `save_summary(slug, content)` に渡して保存・索引更新。
 
-```
-figma-cli/
-├── codex_cli.py          # Codex CLI のエントリーポイント
-├── config.yaml           # Gemini と PDF 取り込みの設定
-├── context/              # 生成されたドキュメントの保存先
-├── run.py                # Codex CLI へのフォワード用エントリーポイント
-├── src/
-│   ├── __init__.py
-│   ├── llm_client.py     # Gemini クライアントの共通設定
-│   └── pdf_ingestor.py   # Nougat 変換とオンデマンド要約
-└── requirements.txt
+Python から直接呼ぶ場合の参考:
+
+```python
+from src.tools import research
+
+cfg = research.load_config()
+paper = research.load_paper("my-paper-slug", max_chars=8000, config=cfg)
+summary = "...ここにCLIで生成したサマリー文字列..."
+result = research.save_summary("my-paper-slug", summary, tags=["experiment"], config=cfg)
+print(result)
+
+# PDF→Markdown 変換をツール関数として利用する例
+res = research.convert_pdf_tool("path/to/paper.pdf", output_dir="data/generated", force=False)
+print(res["markdown_path"])  # 生成された Markdown のパス
 ```
 
-## コマンド補助
+## ディレクトリ/設定
 
-- `python run.py ...` で従来どおり実行しても、内部的に Codex CLI にフォワードされます。
-- `python codex_cli.py --help` で利用可能なオプションを確認できます（`--force`、`--llm-model`、`--nougat-model` など）。
+- 既定の配置
+  - 論文本文: `context/papers/<slug>/paper.md`
+  - 要約別名: `context/summaries/papers/<slug>.md`
+  - 論文索引: `context/papers/index.yaml`
+  - 要約索引: `context/summaries/papers/index.json`
+- これらのパスは `config.yaml` の `document_ingest` セクションで変更可能です。
 
 ## 開発メモ
 
-- LLM 設定は `config.yaml` と `.env` から読み込みます。Gemini を利用できない場合でも、サマリーは抜粋にフォールバックします。
-- 生成物は再生成可能なので、手動で編集する場合はバックアップを取ってから行ってください。
-- 将来的に FigJam や他のデータソースを統合する際は、別ブランチで段階的に追加してください。
+- 本リポジトリは API を直接呼びません。LLM 呼び出しは会話エンジン（Codex CLI）側で行ってください。
+- 生成物は可逆なので、必要に応じて再生成・再保存できます。

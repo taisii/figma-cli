@@ -10,7 +10,7 @@ from typing import List, Optional, Sequence
 from docling.document_converter import ConversionStatus, DocumentConverter
 
 
-DEFAULT_INPUT_DIR = Path("data/input")
+DEFAULT_INPUT_DIR = Path("data/raw/papers")
 DEFAULT_OUTPUT_DIR = Path("data/generated")
 
 
@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         nargs="*",
-        help="処理する PDF ファイルまたはディレクトリ。省略時は data/input 内の全 PDF を対象",
+        help="処理する PDF ファイルまたはディレクトリ。省略時は data/raw/papers 内の全 PDF を対象",
     )
     parser.add_argument(
         "--output-dir",
