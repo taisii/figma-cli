@@ -2,7 +2,10 @@ import os
 from typing import Optional
 
 import dotenv
-import google.generativeai as generativeai
+try:  # pragma: no cover - 実環境では正しく import される
+    import google.generativeai as generativeai
+except ImportError:  # pragma: no cover - テストではモックで代替
+    generativeai = None
 
 
 class LLMUnavailableError(Exception):
@@ -42,6 +45,11 @@ def build_generative_model(config: dict, model_name_override: Optional[str] = No
     if not api_key:
         raise LLMUnavailableError(
             "Environment variable AI_API_KEY is not set. Provide a valid Gemini API key."
+        )
+
+    if generativeai is None:
+        raise LLMUnavailableError(
+            "google-generativeai パッケージがインストールされていません。"
         )
 
     try:
