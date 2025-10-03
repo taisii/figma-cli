@@ -1,3 +1,5 @@
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -9,8 +11,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import yaml
 from pypdf import PdfReader
-
-from .llm_client import LLMUnavailableError, build_generative_model
 
 try:  # pragma: no cover - optional dependency used for richer TeX conversion
     from pylatexenc.latex2text import LatexNodes2Text
@@ -28,29 +28,44 @@ class IngestionResult:
     slug: str
     paper_path: Path
     summary_path: Path
+    summary_alias_path: Path
     metadata_path: Path
     source_path: Path
     message: str
 
 
+@dataclass
+class SummaryGenerationResult:
+    slug: str
+    summary_path: Path
+    summary_alias_path: Path
+    regenerated: bool
+
+
 class DocumentIngestor:
     """Ingest PDF or TeX sources into the knowledge base."""
 
-    def __init__(self, config: Dict, llm_model_override: Optional[str] = None):
+    def __init__(self, config: Dict):
         self.config = config
         ingestion_cfg = config.get("document_ingest") or config.get("pdf_ingest", {})
-        self.raw_dir = Path(ingestion_cfg.get("raw_dir", "context/papers/raw"))
+        self.raw_dir = Path(ingestion_cfg.get("raw_dir", "data/raw/papers"))
         self.processed_dir = Path(ingestion_cfg.get("processed_dir", "context/papers"))
+        self.summaries_dir = Path(ingestion_cfg.get("summaries_dir", "context/summaries"))
+        self.summary_index_path = Path(
+            ingestion_cfg.get("summary_index_path", "context/summaries/index.json")
+        )
+        command_value = ingestion_cfg.get("summary_command", ["codex", "prompt", "summary"])
+        if isinstance(command_value, str):
+            self.summary_command = [command_value]
+        else:
+            self.summary_command = list(command_value)
         self.index_path = Path(ingestion_cfg.get("index_path", "context/index.yaml"))
-        self.summary_max_chars = ingestion_cfg.get("summary_max_chars", 12000)
 
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.summaries_dir.mkdir(parents=True, exist_ok=True)
+        self.summary_index_path.parent.mkdir(parents=True, exist_ok=True)
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-
-        self._llm_model_override = llm_model_override
-        self._llm = None
-        self._llm_error: Optional[Exception] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,8 +94,10 @@ class DocumentIngestor:
             if self._is_ingestion_complete(target_dir):
                 if not force:
                     return self._build_existing_result(slug_value, raw_pdf_path, target_dir)
+                self._remove_summary_alias(slug_value)
                 shutil.rmtree(target_dir)
             else:
+                self._remove_summary_alias(slug_value)
                 shutil.rmtree(target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,6 +126,7 @@ class DocumentIngestor:
             slug=slug_value,
             paper_path=paper_path,
             summary_path=target_dir / "summary.md",
+            summary_alias_path=self.summaries_dir / f"{slug_value}.md",
             metadata_path=metadata_path,
             source_path=raw_pdf_path,
             message=message,
@@ -139,8 +157,10 @@ class DocumentIngestor:
             if self._is_ingestion_complete(target_dir):
                 if not force:
                     return self._build_existing_result(slug_value, raw_source_path, target_dir)
+                self._remove_summary_alias(slug_value)
                 shutil.rmtree(target_dir)
             else:
+                self._remove_summary_alias(slug_value)
                 shutil.rmtree(target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,6 +199,7 @@ class DocumentIngestor:
             slug=slug_value,
             paper_path=paper_path,
             summary_path=target_dir / "summary.md",
+            summary_alias_path=self.summaries_dir / f"{slug_value}.md",
             metadata_path=metadata_path,
             source_path=raw_source_path,
             message=message,
@@ -572,6 +593,9 @@ class DocumentIngestor:
             "source_path": self._relativize(source_path, self.raw_dir.parent),
             "paper_path": self._relativize(paper_path, self.processed_dir.parent),
             "summary_path": self._relativize(paper_path.parent / "summary.md", self.processed_dir.parent),
+            "summary_alias_path": self._relativize(
+                self.summaries_dir / f"{slug}.md", self.summaries_dir.parent
+            ),
             "ingested_at": now,
             "tags": metadata.get("tags", []),
             "summary_generated": False,
@@ -597,11 +621,64 @@ class DocumentIngestor:
         with self.index_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
 
+        self._update_summary_index(entry)
+
+    def _update_summary_index(self, entry: Dict) -> None:
+        existing: List[Dict]
+        if self.summary_index_path.exists():
+            try:
+                existing = json.loads(self.summary_index_path.read_text(encoding="utf-8")) or []
+            except (json.JSONDecodeError, OSError):
+                existing = []
+        else:
+            existing = []
+
+        existing = [item for item in existing if item.get("id") != entry.get("id")]
+
+        if entry.get("summary_generated"):
+            payload = {
+                "id": entry.get("id"),
+                "title": entry.get("title"),
+                "summary_path": entry.get("summary_path"),
+                "summary_alias_path": entry.get("summary_alias_path"),
+                "source_type": entry.get("source_type"),
+                "tags": entry.get("tags", []),
+                "updated_at": entry.get("summary_updated_at") or entry.get("ingested_at"),
+            }
+            existing.append(payload)
+
+        existing.sort(key=lambda item: item.get("updated_at", ""))
+
+        self.summary_index_path.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     def _relativize(self, path: Path, base: Path) -> str:
         try:
             return str(path.relative_to(base))
         except ValueError:
             return str(path)
+
+    def _sync_summary_alias(self, summary_path: Path, slug: str) -> Path:
+        alias_path = self.summaries_dir / f"{slug}.md"
+        alias_path.parent.mkdir(parents=True, exist_ok=True)
+        if alias_path.exists() or alias_path.is_symlink():
+            alias_path.unlink()
+        try:
+            relative_target = os.path.relpath(summary_path, alias_path.parent)
+            alias_path.symlink_to(relative_target)
+        except (OSError, NotImplementedError, ValueError):
+            shutil.copy2(summary_path, alias_path)
+        return alias_path
+
+    def _remove_summary_alias(self, slug: str) -> None:
+        alias_path = self.summaries_dir / f"{slug}.md"
+        try:
+            if alias_path.exists() or alias_path.is_symlink():
+                alias_path.unlink()
+        except OSError:
+            pass
 
     def _is_ingestion_complete(self, target_dir: Path) -> bool:
         paper_path = target_dir / "paper.md"
@@ -637,6 +714,7 @@ class DocumentIngestor:
             slug=slug,
             paper_path=paper_path,
             summary_path=summary_path,
+            summary_alias_path=self.summaries_dir / f"{slug}.md",
             metadata_path=metadata_path,
             source_path=source_path,
             message=message,
@@ -710,8 +788,7 @@ class DocumentIngestor:
         slug: str,
         *,
         force: bool = False,
-        llm_model_override: Optional[str] = None,
-    ) -> Path:
+    ) -> SummaryGenerationResult:
         target_dir = self.processed_dir / slug
         if not target_dir.exists():
             raise DocumentIngestionError(f"Ingested slug not found: {slug}")
@@ -721,10 +798,6 @@ class DocumentIngestor:
             raise DocumentIngestionError(f"paper.md not found for slug '{slug}'. Run ingest first.")
 
         summary_path = target_dir / "summary.md"
-        if summary_path.exists() and not force:
-            raise DocumentIngestionError(
-                f"summary.md already exists for '{slug}'. Use --force to overwrite."
-            )
 
         metadata_path = target_dir / "metadata.yaml"
         metadata: Dict = {}
@@ -734,83 +807,111 @@ class DocumentIngestor:
             except yaml.YAMLError as exc:
                 raise DocumentIngestionError(f"Failed to parse metadata.yaml for '{slug}': {exc}")
 
-        paper_body = paper_path.read_text(encoding="utf-8")
-        excerpt = paper_body if len(paper_body) <= self.summary_max_chars else paper_body[: self.summary_max_chars]
+        if summary_path.exists() and not force:
+            alias_path = self._sync_summary_alias(summary_path, slug)
+            self._persist_summary_metadata(
+                metadata,
+                slug,
+                summary_path,
+                alias_path,
+                metadata_path,
+                update_timestamp=False,
+            )
+            return SummaryGenerationResult(
+                slug=slug,
+                summary_path=summary_path,
+                summary_alias_path=alias_path,
+                regenerated=False,
+            )
 
-        llm_client = self._get_llm(model_override=llm_model_override)
-        prompt = self._build_summary_prompt(metadata, excerpt)
+        summary_text = self._run_summary_command(slug, metadata, paper_path)
+        if not summary_text.strip():
+            raise DocumentIngestionError(
+                f"Codex summary command returned empty output for '{slug}'."
+            )
+
+        summary_path.write_text(summary_text.strip() + "\n", encoding="utf-8")
+
+        alias_path = self._sync_summary_alias(summary_path, slug)
+        self._persist_summary_metadata(
+            metadata,
+            slug,
+            summary_path,
+            alias_path,
+            metadata_path,
+            update_timestamp=True,
+        )
+
+        return SummaryGenerationResult(
+            slug=slug,
+            summary_path=summary_path,
+            summary_alias_path=alias_path,
+            regenerated=True,
+        )
+
+    def _run_summary_command(self, slug: str, metadata: Dict, paper_path: Path) -> str:
+        command = [
+            str(part).format(
+                slug=slug,
+                paper_path=str(paper_path),
+                metadata_path=str(paper_path.parent / "metadata.yaml"),
+            )
+            for part in self.summary_command
+        ]
+
         try:
-            response = llm_client.generate_content(prompt)
-            summary_text = (response.text or "").strip()
-        except Exception as exc:  # pragma: no cover - external SDK failure path
-            raise DocumentIngestionError(f"Gemini summary generation failed: {exc}") from exc
+            paper_body = paper_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise DocumentIngestionError(f"Failed to read paper.md for '{slug}': {exc}") from exc
 
-        summary_path.write_text(summary_text, encoding="utf-8")
+        env = os.environ.copy()
+        env.setdefault("CODEX_SUMMARY_SLUG", slug)
+        env.setdefault("CODEX_SUMMARY_TITLE", (metadata.get("title") or slug))
+        env.setdefault("CODEX_SUMMARY_SOURCE_TYPE", metadata.get("source_type", ""))
 
+        try:
+            result = subprocess.run(
+                command,
+                input=paper_body,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise DocumentIngestionError(
+                f"Summary command not found: {command[0]}"
+            ) from exc
+        except Exception as exc:  # pragma: no cover - unexpected subprocess errors
+            raise DocumentIngestionError(f"Failed to execute summary command: {exc}") from exc
+
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            raise DocumentIngestionError(
+                f"Summary command exited with status {result.returncode}: {stderr}"
+            )
+
+        return (result.stdout or "").strip()
+
+    def _persist_summary_metadata(
+        self,
+        metadata: Dict,
+        slug: str,
+        summary_path: Path,
+        alias_path: Path,
+        metadata_path: Path,
+        *,
+        update_timestamp: bool,
+    ) -> None:
         metadata.setdefault("id", slug)
         metadata["summary_generated"] = True
-        metadata["summary_updated_at"] = datetime.now(timezone.utc).isoformat()
+        if update_timestamp or not metadata.get("summary_updated_at"):
+            metadata["summary_updated_at"] = datetime.now(timezone.utc).isoformat()
         metadata["summary_path"] = self._relativize(summary_path, self.processed_dir.parent)
+        metadata["summary_alias_path"] = self._relativize(alias_path, self.summaries_dir.parent)
 
         with metadata_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(metadata, handle, allow_unicode=True, sort_keys=False)
 
         self._update_index(metadata)
-
-        return summary_path
-
-    def _get_llm(self, *, model_override: Optional[str] = None):
-        if self._llm_error:
-            raise DocumentIngestionError(str(self._llm_error))
-        if self._llm and not model_override:
-            return self._llm
-
-        try:
-            client = build_generative_model(self.config, model_name_override=model_override or self._llm_model_override)
-        except LLMUnavailableError as exc:
-            self._llm_error = exc
-            raise DocumentIngestionError(str(exc)) from exc
-
-        if not model_override:
-            self._llm = client
-        return client
-
-    def _build_summary_prompt(self, metadata: Dict, paper_content: str) -> str:
-        title = metadata.get("title", "Unknown Title")
-        authors = metadata.get("authors") or []
-        authors_str = ", ".join(authors)
-        published = metadata.get("year")
-        doi = metadata.get("doi")
-
-        meta_lines = [f"タイトル: {title}"]
-        if authors_str:
-            meta_lines.append(f"著者: {authors_str}")
-        if published:
-            meta_lines.append(f"発行年: {published}")
-        if doi:
-            meta_lines.append(f"DOI: {doi}")
-
-        prompt_parts = [
-            "あなたは研究支援を担当する優秀なアシスタントです。",
-            "以下の論文本文を読み込み、研究概要を日本語でまとめてください。",
-            "サマリーは次の見出しを含めたマークダウンで出力してください:",
-            "",
-            "# 概要",
-            "## 背景",
-            "## 問題設定",
-            "## 手法",
-            "## 実験・結果",
-            "## 考察・含意",
-            "## キーワード (箇条書き)",
-            "",
-            "必要であれば本文の重要な引用をインラインで引用してください。",
-            "",
-            "--- 論文メタ情報 ---",
-            "\n".join(meta_lines),
-            "",
-            "--- 論文本文 (Markdown) ---",
-            paper_content,
-            "",
-            "上記を踏まえて、指定した構成でサマリーを書いてください。",
-        ]
-        return "\n".join(prompt_parts)

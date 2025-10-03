@@ -5,10 +5,24 @@ gemini_model_name: "models/gemini-1.5-pro"
 # ドキュメント取り込みに関する設定 (PDF / TeX 共通)
 document_ingest:
   # ソースを置く生ファイル置き場
-  raw_dir: "context/papers/raw"
-  # 生成された Markdown やサマリを配置するディレクトリ
+  raw_dir: "data/raw/papers"
+  # 変換済み Markdown やメタデータを配置するディレクトリ
   processed_dir: "context/papers"
+  # 要約の集約先と索引
+  summaries_dir: "context/summaries"
+  summary_index_path: "context/summaries/index.json"
+  # Codex にサマリー生成を依頼するコマンド（paper_path/slug をフォーマットで展開可能）
+  summary_command:
+    - "codex"
+    - "prompt"
+    - "summary"
   # 索引ファイルの配置先
   index_path: "context/index.yaml"
-  # Gemini に渡す本文の最大文字数
-  summary_max_chars: 12000
+
+session_manager:
+  # サマリーをプリロードする知識ベースのディレクトリ
+  knowledge_dir: "context/summaries"
+  # CLI 起動時にサマリーを自動ロードするか
+  auto_preload: true
+  # 自動ロードする最大件数 (None 相当で制限なし)
+  preload_limit: 200

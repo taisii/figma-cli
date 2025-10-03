@@ -1,26 +1,22 @@
-"""サマリー生成コマンドのコア実装。"""
+"""Codex プロンプトを用いて Markdown サマリーを生成するユーティリティ。"""
 
 from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
-import dotenv
 import yaml
-
-from .llm_client import LLMUnavailableError, build_generative_model
-
 
 DEFAULT_INPUT_DIR = Path("data/generated")
 DEFAULT_OUTPUT_DIR = Path("data/generated")
 
 
 class SummarizeError(Exception):
-    """サマリー生成全般の例外。"""
+    """サマリー生成時の利用者向け例外。"""
 
 
 def load_config() -> dict:
@@ -31,47 +27,12 @@ def load_config() -> dict:
         return {}
 
 
-def current_timestamp() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def summarize_markdown(markdown_text: str, model) -> str:
-    prompt = (
-        "You are a research collaborator. Produce a concise summary covering objectives, "
-        "methods, key findings, and open questions of the following paper."
-    )
-    response = model.generate_content([prompt, markdown_text])
-    summary_text = getattr(response, "text", "").strip()
-    if not summary_text:
-        raise SummarizeError("LLM からサマリー本文を取得できませんでした。")
-
-    return _format_summary(summary_text)
-
-
-def _format_summary(summary_text: str) -> str:
-    timestamp = current_timestamp()
-    body = summary_text.strip()
-    return f"generated_at: {timestamp}\n\n{body}\n"
-
-
-def summarize_file(markdown_path: Path, output_dir: Path, model, *, force: bool = True) -> Path:
-    markdown_path = Path(markdown_path)
-    output_dir = Path(output_dir)
-
-    if not markdown_path.exists():
-        raise SummarizeError(f"Markdown が見つかりません: {markdown_path}")
-    if markdown_path.suffix.lower() != ".md":
-        raise SummarizeError(f".md ファイルのみ処理可能です: {markdown_path}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{markdown_path.stem}_summary.md"
-    if output_path.exists() and not force:
-        raise SummarizeError(f"既にサマリーが存在します: {output_path}")
-
-    markdown_text = markdown_path.read_text(encoding="utf-8")
-    summary = summarize_markdown(markdown_text, model)
-    output_path.write_text(summary, encoding="utf-8")
-    return output_path
+def _summary_command(config: dict) -> List[str]:
+    ingestion_cfg = config.get("document_ingest") or {}
+    command_value = ingestion_cfg.get("summary_command", ["codex", "prompt", "summary"])
+    if isinstance(command_value, str):
+        return [command_value]
+    return [str(part) for part in command_value]
 
 
 def _resolve_inputs(values: Optional[Sequence[str]]) -> List[Path]:
@@ -83,10 +44,10 @@ def _resolve_inputs(values: Optional[Sequence[str]]) -> List[Path]:
     for value in values:
         path = Path(value).expanduser()
         if path.is_dir():
-            for md_path in _collect_markdown(path):
-                if md_path not in seen:
-                    collected.append(md_path)
-                    seen.add(md_path)
+            for candidate in _collect_markdown(path):
+                if candidate not in seen:
+                    collected.append(candidate)
+                    seen.add(candidate)
             continue
 
         if path.suffix.lower() != ".md":
@@ -117,8 +78,79 @@ def _collect_markdown(directory: Path) -> List[Path]:
     return markdown_files
 
 
+def _build_command(command_cfg: Sequence[str], *, slug: str, markdown_path: Path) -> List[str]:
+    return [
+        str(part).format(
+            slug=slug,
+            paper_path=str(markdown_path),
+            markdown_path=str(markdown_path),
+        )
+        for part in command_cfg
+    ]
+
+
+def summarize_file(
+    markdown_path: Path,
+    output_dir: Path,
+    command_cfg: Sequence[str],
+    *,
+    overwrite: bool,
+) -> Path:
+    markdown_path = Path(markdown_path)
+    output_dir = Path(output_dir)
+
+    if not markdown_path.exists():
+        raise SummarizeError(f"Markdown が見つかりません: {markdown_path}")
+    if markdown_path.suffix.lower() != ".md":
+        raise SummarizeError(f".md ファイルのみ処理可能です: {markdown_path}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{markdown_path.stem}_summary.md"
+    if output_path.exists() and not overwrite:
+        raise SummarizeError(f"既にサマリーが存在します: {output_path}")
+
+    try:
+        markdown_text = markdown_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SummarizeError(f"Markdown の読み込みに失敗しました: {exc}") from exc
+
+    command = _build_command(command_cfg, slug=markdown_path.stem, markdown_path=markdown_path)
+
+    env = os.environ.copy()
+    env.setdefault("CODEX_SUMMARY_SLUG", markdown_path.stem)
+    env.setdefault("CODEX_SUMMARY_TITLE", markdown_path.stem)
+
+    try:
+        result = subprocess.run(
+            command,
+            input=markdown_text,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise SummarizeError(f"サマリーコマンドが見つかりません: {command[0]}") from exc
+    except Exception as exc:  # pragma: no cover - 想定外のエラー
+        raise SummarizeError(f"サマリーコマンドの実行に失敗しました: {exc}") from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise SummarizeError(
+            f"サマリーコマンドが異常終了しました (exit={result.returncode}): {stderr}"
+        )
+
+    summary_text = (result.stdout or "").strip()
+    if not summary_text:
+        raise SummarizeError("サマリーコマンドが空の出力を返しました。")
+
+    output_path.write_text(summary_text + "\n", encoding="utf-8")
+    return output_path
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Markdown を要約するユーティリティ")
+    parser = argparse.ArgumentParser(description="Codex プロンプトで Markdown を要約するユーティリティ")
     parser.add_argument(
         "--input",
         nargs="*",
@@ -128,10 +160,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
         help="サマリー出力先 (既定: data/generated)",
-    )
-    parser.add_argument(
-        "--model",
-        help="Gemini モデル ID の上書き値",
     )
     parser.add_argument(
         "--no-overwrite",
@@ -145,31 +173,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    config = load_config()
-    dotenv.load_dotenv()
-
-    if not os.getenv("AI_API_KEY"):
-        print("Warning: AI_API_KEY が未設定のためサマリー生成をスキップします。", file=sys.stderr)
-        return 0
-
     try:
+        config = load_config()
+        command_cfg = _summary_command(config)
         markdown_paths = _resolve_inputs(args.input)
         output_dir = Path(args.output_dir).expanduser().resolve()
-        model = build_generative_model(config, model_name_override=args.model)
+
         for path in markdown_paths:
-            summarize_file(path, output_dir, model, force=not args.no_overwrite)
+            summarize_file(path, output_dir, command_cfg, overwrite=not args.no_overwrite)
         return 0
-    except LLMUnavailableError as exc:
-        message = str(exc)
-        if "AI_API_KEY" in message:
-            print(f"Warning: {message}", file=sys.stderr)
-            return 0
-        print(f"Error: {message}", file=sys.stderr)
-        return 1
     except SummarizeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    except Exception as exc:  # 予期しない例外
+    except Exception as exc:  # pragma: no cover - 予期しない例外
         print(f"Unexpected error: {exc}", file=sys.stderr)
         return 1
 

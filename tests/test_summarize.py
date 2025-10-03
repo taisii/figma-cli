@@ -1,61 +1,61 @@
-from pathlib import Path
+import subprocess
+from types import SimpleNamespace
 
-import pytest
 
-
-def test_summarize_skips_without_api_key(monkeypatch, tmp_path):
+def test_summarize_file_invokes_command(monkeypatch, tmp_path):
     from src import summarize
 
-    paper = tmp_path / "paper.md"
-    paper.write_text("# Title\nBody", encoding="utf-8")
+    markdown = tmp_path / "paper.md"
+    markdown.write_text("# Title\nBody", encoding="utf-8")
 
-    monkeypatch.setattr(summarize, "load_config", lambda: {"gemini_model_name": "dummy-model"})
-    monkeypatch.delenv("AI_API_KEY", raising=False)
+    command_calls = []
 
-    exit_code = summarize.main([
-        "--input",
-        str(paper),
-        "--output-dir",
-        str(tmp_path / "generated"),
-    ])
+    def fake_run(cmd, **kwargs):
+        command_calls.append((cmd, kwargs))
+        return SimpleNamespace(returncode=0, stdout="Summary output", stderr="")
 
-    assert exit_code == 0
-    assert not (tmp_path / "generated" / "paper_summary.md").exists()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    command_cfg = ["codex", "prompt", "summary", "--file", "{markdown_path}"]
+    output_path = summarize.summarize_file(
+        markdown,
+        tmp_path / "generated",
+        command_cfg,
+        overwrite=True,
+    )
+
+    assert output_path.exists()
+    assert output_path.read_text(encoding="utf-8") == "Summary output\n"
+    assert len(command_calls) == 1
+    cmd, kwargs = command_calls[0]
+    assert cmd == ["codex", "prompt", "summary", "--file", str(markdown)]
+    assert kwargs["input"].startswith("# Title")
 
 
-def test_summarize_creates_summary(monkeypatch, tmp_path):
+def test_main_reports_command_failure(monkeypatch, tmp_path, capsys):
     from src import summarize
 
-    paper = tmp_path / "notes.md"
-    paper.write_text("Some findings.", encoding="utf-8")
+    markdown_dir = tmp_path / "data" / "generated"
+    markdown_dir.mkdir(parents=True)
+    (markdown_dir / "example.md").write_text("content", encoding="utf-8")
 
-    monkeypatch.setattr(summarize, "load_config", lambda: {"gemini_model_name": "dummy-model"})
-    monkeypatch.setenv("AI_API_KEY", "test-key")
+    def fake_run(_cmd, **_kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="oops")
 
-    prompts = []
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        summarize,
+        "load_config",
+        lambda: {"document_ingest": {"summary_command": ["codex", "prompt", "summary"]}},
+    )
 
-    class DummyResponse:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class DummyModel:
-        def generate_content(self, prompt: str):
-            prompts.append(prompt)
-            return DummyResponse("Summary output")
-
-    monkeypatch.setattr(summarize, "build_generative_model", lambda config, model_name_override=None: DummyModel())
-    monkeypatch.setattr(summarize, "current_timestamp", lambda: "2025-01-01T00:00:00+00:00")
-
-    exit_code = summarize.main([
+    rc = summarize.main([
         "--input",
-        str(paper),
+        str(markdown_dir),
         "--output-dir",
-        str(tmp_path / "generated"),
+        str(tmp_path / "out"),
     ])
 
-    assert exit_code == 0
-    assert len(prompts) == 1
-
-    summary_path = tmp_path / "generated" / "notes_summary.md"
-    content = summary_path.read_text(encoding="utf-8")
-    assert content.startswith("generated_at: 2025-01-01T00:00:00+00:00\n\nSummary output")
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "oops" in captured.err

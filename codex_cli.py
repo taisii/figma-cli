@@ -10,7 +10,11 @@ from typing import List, Optional
 
 import yaml
 
-from src.document_ingestor import DocumentIngestor, DocumentIngestionError
+from src.document_ingestor import (
+    DocumentIngestor,
+    DocumentIngestionError,
+    SummaryGenerationResult,
+)
 
 
 def load_config() -> dict:
@@ -23,7 +27,7 @@ def load_config() -> dict:
 
 def ingest_pdf_command(args: argparse.Namespace) -> int:
     config = load_config()
-    ingestor = DocumentIngestor(config, llm_model_override=args.llm_model)
+    ingestor = DocumentIngestor(config)
 
     try:
         if args.path:
@@ -36,6 +40,7 @@ def ingest_pdf_command(args: argparse.Namespace) -> int:
             print(result.message)
             print(f"  paper:   {result.paper_path}")
             print(f"  summary (pending): {result.summary_path}")
+            print(f"  summary alias: {result.summary_alias_path}")
             print(f"  meta:    {result.metadata_path}")
             print("Use 'python codex_cli.py summarize paper <slug>' to generate a summary when ready.")
             return 0
@@ -45,6 +50,7 @@ def ingest_pdf_command(args: argparse.Namespace) -> int:
             print(item.message)
             print(f"  paper:   {item.paper_path}")
             print(f"  summary (pending): {item.summary_path}")
+            print(f"  summary alias: {item.summary_alias_path}")
             print(f"  meta:    {item.metadata_path}")
         if results:
             print("Use 'python codex_cli.py summarize paper <slug>' to generate summaries when needed.")
@@ -59,12 +65,15 @@ def summarize_paper_command(args: argparse.Namespace) -> int:
     ingestor = DocumentIngestor(config)
 
     try:
-        summary_path = ingestor.ensure_summary(
+        result: SummaryGenerationResult = ingestor.ensure_summary(
             args.slug,
             force=args.force,
-            llm_model_override=args.llm_model,
         )
-        print(f"Generated summary: {summary_path}")
+        if result.regenerated:
+            print(f"Generated summary: {result.summary_path}")
+        else:
+            print(f"Summary already present; aliases refreshed: {result.summary_path}")
+        print(f"Summary alias: {result.summary_alias_path}")
         return 0
     except DocumentIngestionError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -73,7 +82,7 @@ def summarize_paper_command(args: argparse.Namespace) -> int:
 
 def ingest_tex_command(args: argparse.Namespace) -> int:
     config = load_config()
-    ingestor = DocumentIngestor(config, llm_model_override=args.llm_model)
+    ingestor = DocumentIngestor(config)
 
     try:
         result = ingestor.ingest_tex_folder(
@@ -86,6 +95,7 @@ def ingest_tex_command(args: argparse.Namespace) -> int:
         print(result.message)
         print(f"  paper:   {result.paper_path}")
         print(f"  summary (pending): {result.summary_path}")
+        print(f"  summary alias: {result.summary_alias_path}")
         print(f"  meta:    {result.metadata_path}")
         print(f"  source:  {result.source_path}")
         return 0
@@ -113,10 +123,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the PDF in-place instead of copying it into the raw inbox.",
     )
-    pdf_parser.add_argument(
-        "--llm-model",
-        help="Gemini model id override for summary generation.",
-    )
     pdf_parser.set_defaults(func=ingest_pdf_command)
 
     tex_parser = ingest_subparsers.add_parser(
@@ -132,10 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the TeX project in-place instead of copying it into the raw inbox.",
     )
-    tex_parser.add_argument(
-        "--llm-model",
-        help="Gemini model id override for summary generation.",
-    )
     tex_parser.set_defaults(func=ingest_tex_command)
 
     summarize_parser = subparsers.add_parser(
@@ -146,17 +148,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     summarize_pdf_parser = summarize_subparsers.add_parser(
         "paper",
-        help="Summarize an ingested paper using Gemini",
+        help="Summarize an ingested paper using the Codex summary prompt",
     )
     summarize_pdf_parser.add_argument("slug", help="Slug of the ingested paper to summarise.")
     summarize_pdf_parser.add_argument(
         "--force",
         action="store_true",
         help="Overwrite an existing summary.",
-    )
-    summarize_pdf_parser.add_argument(
-        "--llm-model",
-        help="Gemini model id override for this summary generation.",
     )
     summarize_pdf_parser.set_defaults(func=summarize_paper_command)
 
