@@ -11,7 +11,7 @@ Codex CLI 用のエントリーポイントは `codex_cli.py` に集約されて
 - `.codex/prompts/session_summary.md`: 会話サマリー生成に利用する Codex プロンプト。必要に応じて編集してください。
 - `src/document_ingestor.py`: 既存の Codex CLI コマンド (`ingest pdf` / `ingest tex`) から呼ばれる取り込み処理。将来的に Docling ベースへ移行予定ですが、現状は PDF/TeX の一括処理に利用します。
 
-生成された Markdown とメタデータは `context/papers/<slug>/` に `paper.md`・`metadata.yaml`（必要に応じて `summary.md`）のセットで保存され、要約は `context/summaries/<slug>.md` に集約されます。索引は `context/index.yaml` および `context/summaries/index.json` に記録されます。テスト用データや生成物は `data/raw/`・`data/generated/` に配置しますが、リポジトリでは `.gitignore` 済みです。
+生成された Markdown とメタデータは `context/papers/<slug>/` に保存され、要約は論文用の集約先 `context/summaries/papers/<slug>.md` へ配置されます。索引は一次索引を分離し、論文は `context/papers/index.yaml`、ノートは `context/notes/index.yaml` で個別管理します（必要なら集約用に `context/index.yaml` を別途用意可能）。テスト用データや生成物は `data/raw/`・`data/generated/` に配置しますが、リポジトリでは `.gitignore` 済みです。
 
 ## ビルド・テスト・開発コマンド
 作業前に仮想環境と依存関係をセットアップしてください。

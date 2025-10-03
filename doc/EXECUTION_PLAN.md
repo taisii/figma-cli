@@ -20,7 +20,7 @@
 ### フェーズ 1: PDF 取り込み
 - Nougat CLI を呼び出して Markdown (`paper.md`) を生成。
 - PDF メタデータ（タイトル、著者、発行年など）を抽出し、スラッグ生成と `metadata.yaml` の作成を行う。
-- `context/index.yaml` を更新して取り込み履歴を管理。
+- 一次索引は分離管理。論文は `context/papers/index.yaml`、ノートは `context/notes/index.yaml` を更新。
 
 ### フェーズ 2: サマリー生成
 - `pdf_ingestor.py` にオンデマンド要約メソッドを実装し、Codex CLI から任意のタイミングで呼び出せるようにする。

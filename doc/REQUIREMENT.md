@@ -35,7 +35,7 @@
 
 ### 3.3. 対話インターフェース（CLIラッパー）
 ユーザーが直接操作するインターフェース。既存のCLIツールをラップするスクリプトとして実装する。
-- **起動**: ラッパースクリプトを実行すると、`context/summaries/*.md`と`conversation_log.md`の内容を初期コンテキストとして既存CLIに投入し、対話セッションを開始する。
+- **起動**: ラッパースクリプトを実行すると、`context/summaries/papers/*.md`（既定）と`conversation_log.md`の内容を初期コンテキストとして既存CLIに投入し、対話セッションを開始する。ノートを読みたい場合は `--knowledge-dir context/summaries/notes` を指定する。
 - **役割**: ユーザーからのカスタムコマンドを解釈し、コンテキストの追加・削除・保存といった操作を実行する。
 - **初期化ルール**: `conversation_log.md`が存在しない場合は空ファイルを自動生成し、初回行にISO形式日時（例: `2025-10-02T09:00:00Z session initialized`）を記録する。
 - **依存バージョン**: Codex CLI v0.5.0以降を必須とし、未検出時は起動時にエラーを表示して終了する。
@@ -59,7 +59,7 @@
   - **挙動詳細**: 現在読み込み中の全文マークダウンをすべて解除する。解除後は初期コンテキスト（全サマリー＋`conversation_log.md`最新ブロック）のみを保持し、結果をメッセージ表示する。
 
 - **`/list`**
-  - **機能**: 現在知識ベースに存在するサマリー (`context/summaries/*.md`) のリストを一覧表示する。
+  - **機能**: 現在知識ベースに存在するサマリー (`context/summaries/papers/*.md` 等) のリストを一覧表示する。
   - **挙動詳細**: ファイル更新日時の新しい順に表示する。
 
 ---
@@ -110,8 +110,8 @@
 ## 6. 想定利用フロー
 1.  **準備**: ユーザーは新しい論文`new_paper.pdf`を`data/raw/papers/`フォルダに配置する。
 2.  **変換**: `src/convert.py`を実行する。`data/generated/`に`new_paper.md`が生成される。
-3.  **要約**: `src/summarize.py`を実行する。生成されたサマリーは `context/papers/<slug>/summary.md` および `context/summaries/<slug>.md` に保存される。
-4.  **対話開始**: `src/session_manager.py`を起動する。`context/summaries/`内のサマリー群が初期コンテキストとして読み込まれる。
+3.  **要約**: `src/summarize.py`を実行する。生成されたサマリーは `context/papers/<slug>/summary.md` および `context/summaries/papers/<slug>.md` に保存される。
+4.  **対話開始**: `src/session_manager.py`を起動する。`context/summaries/papers/` 内のサマリー群が初期コンテキストとして読み込まれる。
 5.  **議論**: LLMと研究テーマについて議論する。
 6.  **深掘り**: 必要に応じて`/load`コマンドで全文を読み込ませ、詳細な質疑応答を行う。
 7.  **セッション終了**: `/summary`コマンドで議論の要点を保存してセッションを終了する。

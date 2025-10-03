@@ -8,7 +8,7 @@
 
 - **PDF 取り込み (`codex ingest pdf`)**: 指定した PDF を `context/papers/<slug>/` にコピーし、Docling で `paper.md` を生成します。
 - **オンデマンド要約 (`codex summarize paper`)**: 変換した Markdown を読み込み、Codex プロンプトによる日本語サマリー (`summary.md`) を作成します。
-- **メタデータ管理**: 取り込み結果は `metadata.yaml` と `context/index.yaml` に記録され、後から CLI で参照できます。
+- **メタデータ管理**: 取り込み結果は `metadata.yaml` と論文専用索引 `context/papers/index.yaml` に記録されます。ノート類は `context/notes/index.yaml` で別管理します。
 
 ## セットアップ
 
@@ -35,7 +35,7 @@
    # 既存サマリーを再生成する場合
    python codex_cli.py summarize paper <slug> --force
    ```
-4. 生成結果は `context/papers/<slug>/` に配置され、要約は `context/summaries/<slug>.md` にも複製されます。
+4. 生成結果は `context/papers/<slug>/` に配置され、要約は `context/summaries/papers/<slug>.md` にも複製されます。
    - `paper.md`: Docling による Markdown 変換結果
    - `summary.md`: Codex プロンプトによる構造化サマリー（必要な時に生成）
    - `metadata.yaml`: タイトル・著者・元 PDF パスなど
@@ -49,6 +49,8 @@ figma-cli/
 ├── context/              # 生成されたドキュメントと要約の保存先
 │   ├── papers/
 │   └── summaries/
+│       ├── papers/   # 論文サマリー
+│       └── notes/    # ノート・発表サマリー（任意）
 ├── run.py                # Codex CLI へのフォワード用エントリーポイント
 ├── src/
 │   ├── convert.py        # Docling を利用した PDF→Markdown ユーティリティ

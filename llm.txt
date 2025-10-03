@@ -12,8 +12,10 @@
 ├── run.py                    # Codex CLI へのフォワード
 ├── config.yaml               # Codex プロンプトとドキュメント取り込みの設定
 ├── context/                  # 既存 Codex CLI が参照する知識ベース
-│   ├── papers/               # 本文とメタデータ
+│   ├── papers/               # 本文とメタデータ（論文）
 │   └── summaries/            # 要約の集約先
+│       ├── papers/           # 論文サマリー（既定の読み込み対象）
+│       └── notes/            # ノート・発表サマリー（明示時のみ）
 ├── data/
 │   ├── raw/                  # ローカルの PDF / ノート配置先（Git 管理対象外）
 │   ├── staging/              # 中間生成物
@@ -32,7 +34,7 @@
 1. ユーザーが `python codex_cli.py ingest pdf <path>` または `python codex_cli.py ingest tex <dir>` を実行し、従来どおり `DocumentIngestor` が `context/papers/` に成果物を格納する。
 2. より軽量なワークフローが必要な場合は `python -m src.convert --input data/raw/papers/example.pdf` で Docling による Markdown を生成する。
 3. 要約が必要になったら `python -m src.summarize --input data/generated/example.md` を実行し、Codex プロンプトでサマリーを作成する。
-4. セッションを管理したい場合は `AI_API_KEY=... python -m src.session_manager --knowledge-dir context/summaries` を起動し、`/summary` で Codex コマンド（`.codex/prompts/session_summary.md`）を使って会話ログへ追記する。
+4. セッションを管理したい場合は `AI_API_KEY=... python -m src.session_manager --knowledge-dir context/summaries/papers` を起動（既定）。ノートも読みたい場合は `--knowledge-dir context/summaries/notes` を指定するか、複数プロファイルを `config.yaml` で切り替える。
 5. 生成された Markdown / サマリーを Codex CLI や他ツールへコンテキストとして提供する。
 
 ## 4. コーディング上の注意
