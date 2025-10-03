@@ -67,37 +67,7 @@ def test_convert_refuses_overwrite_without_force(monkeypatch, fake_pdf, tmp_path
 def test_convert_all_from_directory(monkeypatch, tmp_path):
     from src import convert
 
-    pdf_dir = tmp_path / "data" / "input"
-    pdf_dir.mkdir(parents=True)
-    first_pdf = pdf_dir / "first.pdf"
-    second_pdf = pdf_dir / "second.pdf"
-    first_pdf.write_bytes(b"%PDF-1.4 A")
-    second_pdf.write_bytes(b"%PDF-1.4 B")
-
-    generated_dir = tmp_path / "data" / "generated"
-
-    calls = []
-
-    def fake_convert(pdf_path, output_dir, force=False):
-        calls.append((Path(pdf_path), Path(output_dir), force))
-        return Path(output_dir) / (Path(pdf_path).stem + ".md")
-
-    monkeypatch.setattr(convert, "convert_pdf", fake_convert)
-    monkeypatch.chdir(tmp_path)
-
-    exit_code = convert.main([])
-
-    assert exit_code == 0
-    assert calls == [
-        (first_pdf, generated_dir, False),
-        (second_pdf, generated_dir, False),
-    ]
-
-
-def test_convert_all_from_directory(monkeypatch, tmp_path):
-    from src import convert
-
-    pdf_dir = tmp_path / "data" / "input"
+    pdf_dir = tmp_path / "data" / "raw" / "papers"
     pdf_dir.mkdir(parents=True)
     first_pdf = pdf_dir / "first.pdf"
     second_pdf = pdf_dir / "second.pdf"
