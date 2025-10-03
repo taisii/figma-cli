@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 import dotenv
 import yaml
@@ -16,7 +16,7 @@ import yaml
 from .llm_client import LLMUnavailableError, build_generative_model
 
 
-DEFAULT_KNOWLEDGE_DIR = Path("data/generated")
+DEFAULT_KNOWLEDGE_DIR = Path("context/summaries")
 CONVERSATION_LOG_NAME = "conversation_log.md"
 REQUIRED_CODEX_VERSION = (0, 5, 0)
 
@@ -48,7 +48,14 @@ def load_config() -> dict:
 class SessionManager:
     """知識ベースと会話ログを扱うユーティリティクラス。"""
 
-    def __init__(self, knowledge_dir: Path = DEFAULT_KNOWLEDGE_DIR, *, model=None) -> None:
+    def __init__(
+        self,
+        knowledge_dir: Path = DEFAULT_KNOWLEDGE_DIR,
+        *,
+        model=None,
+        auto_preload: bool = False,
+        preload_limit: Optional[int] = None,
+    ) -> None:
         self.knowledge_dir = Path(knowledge_dir)
         self.knowledge_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,6 +65,9 @@ class SessionManager:
         self.model = model
         self.active_documents: List[Path] = []
         self.messages: List[str] = []
+
+        if auto_preload:
+            self._auto_preload(preload_limit)
 
     # ------------------------------------------------------------------
     # 基本操作
@@ -70,11 +80,21 @@ class SessionManager:
             f"{timestamp} session initialized\n", encoding="utf-8"
         )
 
+    def _auto_preload(self, preload_limit: Optional[int]) -> None:
+        summaries = [
+            path
+            for path in self.knowledge_dir.glob("*.md")
+            if path.name != CONVERSATION_LOG_NAME and path.is_file()
+        ]
+        summaries.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        if preload_limit is not None and preload_limit >= 0:
+            summaries = summaries[: preload_limit]
+        self.active_documents = summaries
+
     def list_documents(self) -> List[ListEntry]:
         entries: List[ListEntry] = []
-
-        for summary_path in self.knowledge_dir.glob("*_summary.md"):
-            if not summary_path.is_file():
+        for summary_path in self.knowledge_dir.glob("*.md"):
+            if summary_path.name == CONVERSATION_LOG_NAME or not summary_path.is_file():
                 continue
             entries.append(
                 ListEntry(
@@ -84,20 +104,6 @@ class SessionManager:
                     mtime=summary_path.stat().st_mtime,
                 )
             )
-
-        for paper_path in self.knowledge_dir.glob("*.md"):
-            if paper_path.name.endswith("_summary.md") or paper_path.name == CONVERSATION_LOG_NAME:
-                continue
-            partner = paper_path.with_name(f"{paper_path.stem}_summary.md")
-            if not partner.exists():
-                entries.append(
-                    ListEntry(
-                        name=f"{paper_path.name} (summary missing)",
-                        path=paper_path.resolve(),
-                        missing_summary=True,
-                        mtime=paper_path.stat().st_mtime,
-                    )
-                )
 
         entries.sort(key=lambda item: item.mtime, reverse=True)
         return entries
@@ -177,8 +183,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="研究セッション用 CLI ラッパー")
     parser.add_argument(
         "--knowledge-dir",
-        default=str(DEFAULT_KNOWLEDGE_DIR),
-        help="知識ベースディレクトリ (既定: data/generated)",
+        default=None,
+        help="知識ベースディレクトリ (既定: 設定値または context/summaries)",
     )
     parser.add_argument(
         "--model",
@@ -246,11 +252,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not os.getenv("AI_API_KEY"):
             raise SessionCommandError("AI_API_KEY が設定されていません。")
 
-        knowledge_dir = Path(args.knowledge_dir).expanduser().resolve()
         config = load_config()
+        session_cfg = config.get("session_manager", {})
+
+        knowledge_dir_value = (
+            args.knowledge_dir
+            or session_cfg.get("knowledge_dir")
+            or str(DEFAULT_KNOWLEDGE_DIR)
+        )
+        knowledge_dir = Path(knowledge_dir_value).expanduser().resolve()
+
+        auto_preload_cfg = session_cfg.get("auto_preload")
+        auto_preload = True if auto_preload_cfg is None else bool(auto_preload_cfg)
+
+        preload_limit_cfg = session_cfg.get("preload_limit")
+        if preload_limit_cfg is None:
+            preload_limit: Optional[int] = None
+        else:
+            try:
+                preload_limit = int(preload_limit_cfg)
+            except (TypeError, ValueError) as exc:
+                raise SessionCommandError("session_manager.preload_limit は整数で指定してください。") from exc
+
         model = build_generative_model(config, model_name_override=args.model)
 
-        manager = SessionManager(knowledge_dir, model=model)
+        manager = SessionManager(
+            knowledge_dir,
+            model=model,
+            auto_preload=auto_preload,
+            preload_limit=preload_limit,
+        )
         return _interactive_loop(manager)
     except SessionCommandError as exc:
         print(f"Error: {exc}", file=sys.stderr)
