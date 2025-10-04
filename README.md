@@ -21,6 +21,16 @@
 
 要約の生成自体は Codex CLI のプロンプト（例: `.codex/prompts/summary.md`）で行い、本ツールは結果の永続化のみを担当する。
 
+## MCP サーバーとして利用する
+
+LLM との連携をより柔軟にするため、Model Context Protocol (MCP) サーバーを同梱しました。
+
+- エントリーポイント: `python -m src.mcp_server`
+- 必要な追加パッケージ: `pip install modelcontextprotocol`
+- 公開ツール: `list_papers` / `load_paper` / `save_summary` / `convert_pdf_tool`
+
+MCP サーバーは標準入出力で待ち受け、会話エンジン側からの Tool 呼び出しを既存の純粋ツール関数にディスパッチします。
+
 ## 使い方（例）
 
 Codex CLI のツール実行から Python 関数を呼べる設定で、下記のように利用します。
