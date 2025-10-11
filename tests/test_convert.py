@@ -34,9 +34,11 @@ def test_convert_pdf_to_markdown(monkeypatch, fake_pdf, tmp_path):
     class DummyConverter:
         def __init__(self):
             self.paths = []
+            self.kwargs_list = []
 
-        def convert(self, path):
+        def convert(self, path, **kwargs):
             self.paths.append(path)
+            self.kwargs_list.append(kwargs)
             return dummy_result
 
     dummy_converter = DummyConverter()
@@ -59,5 +61,6 @@ def test_convert_pdf_to_markdown(monkeypatch, fake_pdf, tmp_path):
     assert result["pdf_sha256"] == expected_hash
     assert result["docling_opts_sha256"] == expected_opts_hash
 
-    # converter が呼ばれた
+    # converter が呼ばれ、options が伝搬している
     assert dummy_converter.paths == [str(fake_pdf)]
+    assert dummy_converter.kwargs_list and dummy_converter.kwargs_list[0].get("options") == options

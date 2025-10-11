@@ -336,66 +336,90 @@ def ingest_pdf(
     _validate_slug(slug)
     paths = _resolve_paths(base_dir)
     paper_dir = paths.papers_dir / slug
+    # 既存索引の有無と残骸ディレクトリの扱い
+    already_indexed = _find_paper_entry(paths.papers_index_path, slug) is not None
+    if already_indexed:
+        # 既に索引済みのスラッグは衝突とする（上書きは明示的な別APIで対応）
+        raise ConflictError(f"paper already indexed for slug: {slug}")
+    if paper_dir.exists():  # 前回失敗の残骸などは事前にクリーンアップ
+        try:
+            shutil.rmtree(paper_dir)
+        except OSError:
+            pass
     paper_dir.mkdir(parents=True, exist_ok=True)
 
+    index_written = False
     try:
         convert_result = convert.convert_pdf_to_markdown(pdf_path, paper_dir, options=options)
+
+        main_md_path = Path(convert_result["main_md_path"])
+        markdown_raw = _read_file(main_md_path)
+        body_meta, body = _split_front_matter(markdown_raw)
+        del body_meta
+
+        title = _infer_title(body, slug.replace("-", " ").title())
+        now = _now()
+        pages = len(convert_result["page_map"]) if convert_result.get("page_map") else 0
+        hash_info = {
+            "pdf_sha256": convert_result["pdf_sha256"],
+            "docling_opts": convert_result["docling_opts_sha256"],
+        }
+        front_matter = {
+            "title": title,
+            "slug": slug,
+            "pages": pages,
+            "hash": hash_info,
+            "updated_at": now,
+        }
+        document_text = _compose_document(front_matter, body)
+        _atomic_write_text(main_md_path, document_text)
+
+        # 入力 PDF を保存
+        pdf_target = paper_dir / "source.pdf"
+        shutil.copy2(pdf_path, pdf_target)
+
+        chunks_dir = paper_dir / "chunks"
+        chunk_result = chunk_markdown_for_llm(main_md_path, chunks_dir)
+
+        chunk_index_path = Path(chunk_result["index_path"])
+        entry = {
+            "slug": slug,
+            "title": title,
+            "md_path": _rel_path(main_md_path, paths.base_dir),
+            "assets_dir": _rel_path(Path(convert_result["assets_dir"]), paths.base_dir),
+            "tables_dir": _rel_path(Path(convert_result["tables_dir"]), paths.base_dir),
+            "chunk_index_path": _rel_path(chunk_index_path, paths.base_dir),
+            "chunk_count": len(chunk_result["chunks"]),
+            "pages": pages,
+            "hash": hash_info,
+            "updated_at": now,
+            "source_pdf": _rel_path(pdf_target, paths.base_dir),
+        }
+        _upsert_papers_index(paths.papers_index_path, entry)
+        index_written = True
+
+        return {
+            "slug": slug,
+            "main_md_path": str(main_md_path),
+            "chunk_index_path": str(chunk_index_path),
+            "chunks": chunk_result["chunks"],
+            "page_map": convert_result["page_map"],
+            "hash": hash_info,
+        }
     except convert.ConvertError as exc:
+        if not index_written:
+            try:
+                shutil.rmtree(paper_dir)
+            except OSError:
+                pass
         raise ConvertError(str(exc)) from exc
-
-    main_md_path = Path(convert_result["main_md_path"])
-    markdown_raw = _read_file(main_md_path)
-    body_meta, body = _split_front_matter(markdown_raw)
-    del body_meta
-
-    title = _infer_title(body, slug.replace("-", " ").title())
-    now = _now()
-    pages = len(convert_result["page_map"]) if convert_result.get("page_map") else 0
-    hash_info = {
-        "pdf_sha256": convert_result["pdf_sha256"],
-        "docling_opts": convert_result["docling_opts_sha256"],
-    }
-    front_matter = {
-        "title": title,
-        "slug": slug,
-        "pages": pages,
-        "hash": hash_info,
-        "updated_at": now,
-    }
-    document_text = _compose_document(front_matter, body)
-    _atomic_write_text(main_md_path, document_text)
-
-    # 入力 PDF を保存
-    pdf_target = paper_dir / "source.pdf"
-    shutil.copy2(pdf_path, pdf_target)
-
-    chunks_dir = paper_dir / "chunks"
-    chunk_result = chunk_markdown_for_llm(main_md_path, chunks_dir)
-
-    chunk_index_path = Path(chunk_result["index_path"])
-    entry = {
-        "slug": slug,
-        "title": title,
-        "md_path": _rel_path(main_md_path, paths.base_dir),
-        "assets_dir": _rel_path(Path(convert_result["assets_dir"]), paths.base_dir),
-        "tables_dir": _rel_path(Path(convert_result["tables_dir"]), paths.base_dir),
-        "chunk_index_path": _rel_path(chunk_index_path, paths.base_dir),
-        "chunk_count": len(chunk_result["chunks"]),
-        "pages": pages,
-        "hash": hash_info,
-        "updated_at": now,
-        "source_pdf": _rel_path(pdf_target, paths.base_dir),
-    }
-    _upsert_papers_index(paths.papers_index_path, entry)
-
-    return {
-        "slug": slug,
-        "main_md_path": str(main_md_path),
-        "chunk_index_path": str(chunk_index_path),
-        "chunks": chunk_result["chunks"],
-        "page_map": convert_result["page_map"],
-        "hash": hash_info,
-    }
+    except Exception:
+        if not index_written:
+            try:
+                shutil.rmtree(paper_dir)
+            except OSError:
+                pass
+        raise
 
 
 def list_papers(base_dir: str | os.PathLike[str] | Path) -> List[Dict[str, Any]]:

@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import inspect
 
 from docling.document_converter import ConversionStatus, DocumentConverter
 
@@ -92,7 +93,27 @@ def _convert_with_docling(
 ) -> Tuple[str, List[Dict[str, Any]]]:
     converter = _get_converter()
     try:
-        result = converter.convert(str(pdf_path))
+        # 可能な限り後方互換に、`convert` のシグネチャを検査して適切な引数名で渡す
+        kwargs: Dict[str, Any] = {}
+        if options:
+            try:
+                sig = inspect.signature(converter.convert)
+                params = sig.parameters
+                if "options" in params:
+                    kwargs["options"] = options
+                elif "pipeline_options" in params:
+                    kwargs["pipeline_options"] = options
+                elif "config" in params:
+                    kwargs["config"] = options
+                else:
+                    # 可変キーワード対応なら `options` 名で渡す
+                    if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+                        kwargs["options"] = options
+            except Exception:
+                # シグネチャ取得に失敗しても安全側で従来どおり無引数にフォールバック
+                kwargs = {}
+
+        result = converter.convert(str(pdf_path), **kwargs)
     except Exception as exc:  # pragma: no cover - 外部ライブラリの例外をまとめて扱う
         raise ConvertError(f"Docling convert failed: {exc}") from exc
 

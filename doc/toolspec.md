@@ -1,95 +1,98 @@
-# Tool Specification（純粋ツール構成）
+# Tool Specification（実装準拠）
 
-この文書は、会話エンジン（例: Codex CLI）から直接呼び出す本リポジトリの“ツール関数”仕様を定義します。LLM/API は呼び出さず、ファイル入出力と索引更新のみを行います。
+この文書は、会話エンジン（例: Codex CLI）から直接呼び出す本リポジトリのツール関数仕様を、実装に合わせて定義します（最終更新: 2025-10-11）。LLM/API は呼び出さず、ファイル入出力と索引更新のみを行います。
 
 ## 共通
-- 設定: `config.yaml` の `document_ingest` セクションを使用
-  - `raw_dir`（既定: `data/raw/papers`）
-  - `processed_dir`（既定: `context/papers`）
-  - `summaries_dir`（既定: `context/summaries/papers`）
-  - `summary_index_path`（既定: `context/summaries/papers/index.json`）
-  - `index_path`（既定: `context/papers/index.yaml`）
-- パスの表記
-  - `list_papers` の `paper_path`/`summary_path`/`summary_alias_path` は相対パス（読みやすさのため）
-  - `load_paper` の `paper_path` と `save_summary` の戻り値は絶対パス
-  - シンボリックリンク不可環境では、要約の別名はコピーで同期
-- エラーは Python 標準例外（`FileNotFoundError`/`OSError` など）または明示的例外（変換）を送出
+- ルート: 各関数は必ず `base_dir` または `out_dir` を受け取り、`<base_dir>/context/...` 配下に生成・更新します（`src/tools/research._resolve_paths` 準拠）。
+- 設定ファイル: `config.yaml` は存在しますが、コア関数はこれを読みません（パス規約は固定）。
+- 主要パス規約
+  - 論文本文: `context/papers/<slug>/main.md`
+  - チャンク: `context/papers/<slug>/chunks/`（`index.json` あり）
+  - 要約: `context/summaries/papers/<slug>.md`
+  - 索引: `context/papers/index.yaml`, `context/summaries/papers/index.json`
+- APIのパス返却方針
+  - API戻り値は「呼び出し側に返す値」は原則絶対パス。
+  - 索引に保存される値は相対パス。
+- 例外方針: モジュール独自の例外を使用します。
+  - `ResearchError` 基底、`ValidationError`/`NotFoundError`/`ConvertError` など（実装定義）。
 
 ---
 
-## list_papers(config: dict | None = None) -> list[dict]
-論文の概要を列挙します（各フィールドは `metadata.yaml` を優先し、欠落時は `paper.md` の frontmatter で補完）。
+## list_papers(base_dir: str | os.PathLike | Path) -> list[dict]
+論文の一覧を `context/papers/index.yaml` から読み込み、各要素を正規化して返します。
 
-- 入力: 省略可（`config.yaml` の既定を使用）
-- 動作: `processed_dir/<slug>/paper.md` を持つディレクトリを走査
-- 戻り値（配列の各要素）
-  - `id: str`（slug）
-  - `title: str`（`metadata.yaml` 優先、無い場合は frontmatter）
-  - `authors: list[str] | []`（`metadata.yaml` 優先、無い場合は frontmatter）
-  - `year: str | int | null`（`metadata.yaml` 優先、無い場合は frontmatter）
-  - `paper_path: str`（相対パス）
-  - `summary_path: str | null`（相対パス、存在時）
-  - `summary_alias_path: str | null`（相対パス、存在時）
-- 例外/副作用: なし（読み取りのみ）
-- 冪等性: あり
+- 入力: `base_dir`（必須）
+- 動作: インデックス内の各要素をコピーし、以下の既知パスキーを絶対パスへ正規化
+  - `md_path`, `assets_dir`, `tables_dir`, `summary_path`
+- 注意: インデックスに該当キーが無い場合は空文字として結合されるため、結果が `base_dir` を指す場合があります（インデックス整備を推奨）。
+- 戻り値: インデックス項目の配列（未知キーはそのまま保持）。
+- 例外/副作用: なし / なし
 
 ---
 
-## load_paper(slug: str, max_chars: int | None = None, config: dict | None = None) -> dict
-`paper.md` を読み出して返します。
+## load_paper(slug: str, base_dir: str | os.PathLike | Path, *, max_chars: int | None = None) -> dict
+`context/papers/<slug>/main.md` を読み出して返します（先頭 front matter を除いた本文）。
 
-- 入力
-  - `slug: str`（必須）
-  - `max_chars: int | None`（任意、先頭からの切り出し上限。トークン対策）
+- 入力: `slug`（必須）、`base_dir`（必須）、`max_chars`（任意）
 - 戻り値
   - `slug: str`
   - `content: str`
-  - `truncated: bool`（切り詰めた場合 True）
-  - `paper_path: str`（絶対パス）
-- 例外
-  - `FileNotFoundError`（`paper.md` が見つからない）
+  - `truncated: bool`
+  - `meta: dict`（front matter）
+  - `path: str`（絶対パス; `main.md`）
+- 例外: `NotFoundError`（ファイル不存在）
 - 副作用/冪等性: なし / あり
 
 ---
 
-## save_summary(slug: str, content: str, tags: list[str] | None = None, config: dict | None = None) -> dict
-要約を保存し、別名と索引を更新します（LLM 非依存）。
+## save_summary(slug: str, content: str, base_dir: str | os.PathLike | Path, *, tags: list[str] | None = None) -> dict
+要約を保存し、索引を更新します（LLM 非依存）。別名ファイルは作成しません。
 
-- 入力
-  - `slug: str`（必須）
-  - `content: str`（必須）
-  - `tags: list[str] | None`（任意、既存タグとマージ）
+- 入力: `slug`, `content`, `base_dir`（必須）、`tags`（任意）
 - 動作
-  - `processed_dir/<slug>/summary.md` を上書き保存
-  - `summaries_dir/<slug>.md` を symlink（不可時はコピー）で同期
-  - `processed_dir/index.yaml` を upsert（`id/title/tags/summary_*` など）
-  - `summaries_dir/index.json` を upsert（`id/title/summary_*` など）
+  - `context/summaries/papers/<slug>.md` を保存（front matter に `slug/tags/updated_at`）
+  - `context/summaries/papers/index.json` を upsert（`slug/path/title/tags/source_hash/chunk_refs/updated_at`）
+  - `context/papers/index.yaml` を upsert（`summary_path`, `summary_updated_at`）
 - 戻り値
   - `summary_path: str`（絶対パス）
-  - `summary_alias_path: str`（絶対パス）
-- 例外
-  - `FileNotFoundError`（`processed_dir/<slug>/paper.md` が存在しない）
-  - `yaml.YAMLError`（`metadata.yaml` の構文エラー。保存を中止して例外を返す）
-  - `OSError`（入出力失敗）
-- 副作用/冪等性
-  - 副作用あり（ファイル/索引更新）。同一 `content` での再実行はタイムスタンプ以外は実質同一
+  - `chunk_refs: list[str]`
+  - `updated_at: str`（UTC ISO8601）
+- 例外: `NotFoundError`（未索引の `slug`、またはチャンク索引なし）
+- 副作用/冪等性: あり / 同一内容なら時刻以外は実質同一
 
 ---
 
-## convert_pdf_tool(pdf_path: str, output_dir: str | None = None, *, force: bool = False) -> dict
-Docling を使用して PDF を Markdown に変換します（LLM 非依存）。
+## convert_pdf_to_markdown(pdf_path: str | Path, out_dir: str | Path, *, options: dict | None = None) -> dict
+Docling を使用して PDF を Markdown（`main.md`）に変換します（LLM 非依存）。
 
-- 入力
-  - `pdf_path: str`（必須）
-  - `output_dir: str | None`（任意、既定は `data/generated`）
-  - `force: bool`（任意、既存 `.md` 上書き）
+- 入力: `pdf_path`（必須）, `out_dir`（必須）, `options`（任意）
 - 戻り値
-  - `markdown_path: str`（絶対パス）
-- 例外
-  - `ConversionError`（変換失敗・空出力 など。`src.convert` 由来）
-  - `FileNotFoundError` / `ValueError` 等（入力不備）
-- 副作用/冪等性
-  - 出力ファイル作成。`force=False` では既存があると失敗。成功時は決定的（同一 PDF→同一 Markdown）
+  - `main_md_path: str`, `assets_dir: str`, `tables_dir: str`
+  - `page_map: list[dict]`, `pdf_sha256: str`, `docling_opts_sha256: str`
+- 例外: `src.convert.ConvertError`
+- 副作用: `out_dir` 配下にファイル生成（決定的）
+
+---
+
+## ingest_pdf(slug: str, pdf_path: str | Path, base_dir: str | Path, *, options: dict | None = None) -> dict
+PDF を取り込み、`main.md` のfront matter付与、`chunks/`生成、`context/papers/index.yaml` を upsert します。
+
+- 戻り値: `slug`, `main_md_path`, `chunk_index_path`, `chunks`, `page_map`, `hash`
+- 副作用: `context/papers/<slug>/` 配下に `main.md`, `chunks/`, `source.pdf` を作成し、索引更新
+- 例外: `ConvertError` ほか
+
+備考（リトライ挙動）
+- スラッグが未索引かつ `context/papers/<slug>/` が既に存在する場合、残骸とみなし自動的に削除してから再生成します。
+- 変換やチャンク生成などインデックス更新前の段階で失敗した場合は、未索引であれば部分生成物を自動削除し、次回実行で再試行できます。
+
+---
+
+## chunk_markdown_for_llm(markdown_path: str | Path, out_dir: str | Path, *, strategy: str = "heading", max_chars: int = 4000, overlap: int = 200) -> dict
+Markdown をチャンク分割して `out_dir` に保存し、`index.json` を生成します。
+
+- 戻り値: `chunks: list[{id, path, char_count}]`, `index_path: str`
+- 例外: `ValidationError`（不正な戦略/引数）
+- 副作用: `out_dir` にファイル作成
 
 ---
 
@@ -97,14 +100,17 @@ Docling を使用して PDF を Markdown に変換します（LLM 非依存）�
 ```python
 from src.tools import research
 
-cfg = research.load_config()
-paper_info = research.load_paper("my-slug", max_chars=8000, config=cfg)
-# 要約生成は会話エンジン（プロンプト）で実施
-summary_text = "..."  # 生成テキスト
-res = research.save_summary("my-slug", summary_text, tags=["experiment"], config=cfg)
-print(res)
+# 取り込み（初回）
+ing = research.ingest_pdf("my-slug", "path/to/paper.pdf", base_dir=".")
 
-# PDF→Markdown 変換をツールとして利用
-res2 = research.convert_pdf_tool("path/to/paper.pdf", output_dir="data/generated", force=False)
-print(res2["markdown_path"]) 
+# 本文の読み出し（要約は会話エンジン側で生成）
+paper = research.load_paper("my-slug", base_dir=".", max_chars=8000)
+
+# 要約の保存
+res = research.save_summary("my-slug", "...生成テキスト...", base_dir=".", tags=["experiment"])
+print(res["summary_path"])  # 絶対パス
+
+# 単体のPDF変換ユーティリティとして
+res2 = research.convert_pdf_to_markdown("path/to/paper.pdf", out_dir="data/generated")
+print(res2["main_md_path"]) 
 ```

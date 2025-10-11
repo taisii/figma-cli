@@ -1,78 +1,83 @@
-# LLM 開発者向けコンテキストガイド（純粋ツール構成）
+# LLM 開発者向けコンテキストガイド（実装準拠）
 
 ## 1. 目的
 
-本リポジトリは、単一の会話エンジン（例: Codex CLI）が「研究の相棒」として振る舞うための“ツール関数”を提供します。ここでは LLM/API を呼ばず、論文本文や要約の読み出し・保存・索引更新と、PDF→Markdown 変換（Docling）だけを担います。LLM による要約生成や意思決定は会話エンジン側のプロンプトで行います。
+本リポジトリは、単一の会話エンジン（例: Codex CLI）が「研究の相棒」として振る舞うための“ツール関数”を提供します。LLM/API は呼ばず、論文本文・要約の入出力/索引更新と、PDF→Markdown 変換（Docling）を担います。要約生成や意思決定は会話エンジン側のプロンプトで行います（実装最終確認: 2025-10-11）。
 
 ## 2. ディレクトリ構造
 
 ```
 /
-├── config.yaml               # パス設定（context/* など）
-├── context/                  # 知識ベース（本文・要約・索引）
-│   ├── papers/               # 本文とメタデータ（論文）
+├── context/                      # 知識ベース（本文・要約・索引）
+│   ├── papers/
+│   │   └── <slug>/
+│   │       ├── main.md          # 変換済みMarkdown（front matter付き）
+│   │       ├── assets/          # 画像等
+│   │       ├── tables/          # 表等
+│   │       └── chunks/          # LLM向け分割（index.jsonあり）
 │   └── summaries/
-│       └── papers/           # 要約の別名配置と簡易インデックス
-├── data/
-│   ├── raw/                  # PDF 原本（任意・Git 管理外）
-│   └── generated/            # 変換結果（任意・Git 管理外）
+│       └── papers/
+│           └── <slug>.md        # 要約（front matter付き）
 ├── src/
-│   ├── convert.py            # Docling による PDF→Markdown 変換（LLM 非依存）
+│   ├── convert.py                # Docling による PDF→Markdown 変換
 │   └── tools/
-│       └── research.py       # 会話エンジンから呼ばれるツール関数群
-├── tests/
-│   ├── test_convert.py
-│   └── test_research_tools.py
-├── doc/
+│       └── research.py           # 会話エンジンから呼ばれるツール関数群
+├── context/papers/index.yaml     # 論文索引
+├── context/summaries/papers/index.json
 └── requirements.txt
 ```
 
 ## 3. 処理フロー（会話エンジン視点）
 
-1) 本文の取得
-- `tools.research.list_papers()` で候補を列挙
-- `tools.research.load_paper(slug, max_chars=...)` で `paper.md` を読み出し
+1) 取り込み（初回）
+- `tools.research.ingest_pdf(slug, pdf_path, base_dir=...)`
+  - `context/papers/<slug>/main.md` を生成、`chunks/` を作成、`context/papers/index.yaml` を upsert。
 
-2) 要約の生成（会話エンジン側）
-- `.codex/prompts/summary.md` 等のプロンプトで LLM が要約テキストを生成
+2) 本文の取得
+- `tools.research.load_paper(slug, base_dir=..., max_chars=...)` で `main.md` を読み出し。
 
-3) 要約の保存と索引更新
-- 生成テキストを `tools.research.save_summary(slug, content, tags=...)` に渡して永続化
-- `context/summaries/papers/<slug>.md` へ別名を同期し、`index.yaml` と `summaries/index.json` を upsert
+3) 要約の生成（会話エンジン側）
+- `.codex/prompts/summary.md` 等で LLM が要約テキストを生成。
 
-補助: PDF→Markdown 変換（任意）
-- `python -m src.convert --input path/to/paper.pdf --output-dir data/generated` で Markdown を生成
-- 生成した Markdown を `context/papers/<slug>/paper.md` に配置して運用
+4) 要約の保存と索引更新
+- 生成テキストを `tools.research.save_summary(slug, content, base_dir=..., tags=...)` に渡して永続化。
+- `context/summaries/papers/<slug>.md` を保存し、`index.yaml` と `summaries/index.json` を upsert。
+
+補助: 単体PDF変換（必要時）
+- `tools.research.convert_pdf_to_markdown(pdf_path, out_dir=...)` を直接使用可能。
 
 ## 4. ツール関数の役割（src/tools/research.py）
 
-- `load_config() -> dict`
-  - `config.yaml` を読み込み、パス設定を辞書で返すヘルパ。
-- `list_papers(config: dict | None = None) -> list[dict]`
-  - `context/papers/<slug>/paper.md` を持つディレクトリを走査し、`{id,title,authors,year,paper_path,summary_path,summary_alias_path}` の一覧を返す。
-- `load_paper(slug: str, max_chars: int | None = None, config: dict | None = None) -> dict`
-  - 指定スラッグの `paper.md` を読み出し、必要に応じて `max_chars` でトークン量を制御して返す（`{slug, content, truncated, paper_path}`）。
-- `save_summary(slug: str, content: str, tags: list[str] | None = None, config: dict | None = None) -> dict`
-  - `summary.md` を保存し、`context/summaries/papers/<slug>.md` の別名同期、`context/papers/index.yaml` と `context/summaries/papers/index.json` を upsert。戻り値は `{summary_path, summary_alias_path}`。
+- `convert_pdf_to_markdown(pdf_path, out_dir, *, options=None) -> dict`
+  - Docling で PDF→Markdown（`main.md`）へ変換し、`assets/`, `tables/` も整備。
+- `ingest_pdf(slug, pdf_path, base_dir, *, options=None) -> dict`
+  - 上記変換＋front matter 付与、`chunks/` 生成、`context/papers/index.yaml` へ upsert。
+- `chunk_markdown_for_llm(markdown_path, out_dir, *, strategy="heading", max_chars=4000, overlap=200) -> dict`
+  - Markdown を LLM用に分割し、`chunks/` と `index.json` を生成。
+- `list_papers(base_dir) -> list[dict]`
+  - `context/papers/index.yaml` の要素を返す。既知のパスキーは絶対パスへ正規化。
+- `load_paper(slug, base_dir, *, max_chars=None) -> dict`
+  - `context/papers/<slug>/main.md` を読み出して返す。
+- `save_summary(slug, content, base_dir, *, tags=None) -> dict`
+  - `context/summaries/papers/<slug>.md` を保存し、両索引を更新（別名ファイルは作成しない）。
 
-いずれの関数も LLM/API を呼ばず、純粋なファイル入出力のみを行います。これにより再現性・テスト容易性・安全性が担保されます。
+いずれの関数も LLM/API を呼ばず、純粋なファイル入出力のみを行います。戻り値のパスは原則「絶対パス」、索引へ保存するパスは「相対パス」です。
 
 ## 5. PDF→Markdown 変換（src/convert.py）
 
 - Docling を用いて PDF を Markdown に変換するユーティリティ。LLM を介さず、構造抽出の正確さを重視。
-- 使い方: `python -m src.convert --input path/to/paper.pdf --output-dir data/generated`
-- 変換後は `context/papers/<slug>/paper.md` に配置して運用します（スラッグ規約はチームで合意）。
+- 直接ユーティリティとして使う場合は `research.convert_pdf_to_markdown(...)` を推奨。
 
-### 変換を“ツール”として実装するメリット
+### 変換/取り込みを“ツール”として実装するメリット
 - 一貫した呼び出しモデル: 会話エンジンから他ツール同様に関数呼び出しで実行できる。
 - セキュリティと再現性: API や外部ネットワークに依存せず、同じ PDF から同じ Markdown を再生成可能。
 - テスト容易性: Docling 呼び出しをモックし、入出力だけを検証できる。
 - 責務分離: 変換（機械的処理）と要約（推論）を分離し、障害切り分けが容易。
 - 移植性: CI/ローカル/サーバで同一インターフェースを維持。
 
-変換は“ツール関数”としても提供しています:
-- `tools.research.convert_pdf_tool(pdf_path, output_dir=None, force=False) -> {markdown_path}`
-  - 内部で `src.convert.convert_pdf`（Docling）を呼び、LLM 非依存で Markdown を生成します。
+提供関数:
+- `convert_pdf_to_markdown(...)`（変換ユーティリティ）
+- `ingest_pdf(...)`（変換＋索引更新＋チャンク生成の一括処理）
 
 ## 6. コーディング上の注意
 
@@ -82,6 +87,6 @@
 
 ## 7. 今後の拡張候補
 
-- `create_paper(slug, title, source_path)` のような簡易インジェストツールの追加
+- `create_paper(slug, title, source_path)` のような簡易インジェストの拡張
 - 要約のバリエーション（ショート/ロング）をツールの保存タグで表現
 - 簡易検索やタグフィルタリングのツール関数
