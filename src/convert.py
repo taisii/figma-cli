@@ -1,21 +1,18 @@
-"""PDF 変換ユーティリティ (Docling ベース)。"""
+"""Docling を用いた PDF→Markdown 変換ユーティリティ。"""
 
 from __future__ import annotations
 
-import argparse
-import sys
+from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Tuple
 
 from docling.document_converter import ConversionStatus, DocumentConverter
 
 
-DEFAULT_INPUT_DIR = Path("data/raw/papers")
-DEFAULT_OUTPUT_DIR = Path("data/generated")
-
-
-class ConversionError(Exception):
-    """PDF 変換に失敗した場合の例外。"""
+class ConvertError(Exception):
+    """PDF の変換に失敗した場合の例外。"""
 
 
 _DOC_CONVERTER: Optional[DocumentConverter] = None
@@ -28,129 +25,135 @@ def _get_converter() -> DocumentConverter:
     return _DOC_CONVERTER
 
 
-def convert_pdf(pdf_path: Path, output_dir: Path, *, force: bool = False) -> Path:
-    """単一の PDF を Markdown に変換する。"""
+@dataclass
+class ConvertResult:
+    main_md_path: Path
+    assets_dir: Path
+    tables_dir: Path
+    page_map: List[Dict[str, Any]]
+    pdf_sha256: str
+    docling_opts_sha256: str
 
-    pdf_path = Path(pdf_path)
-    output_dir = Path(output_dir)
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "main_md_path": str(self.main_md_path),
+            "assets_dir": str(self.assets_dir),
+            "tables_dir": str(self.tables_dir),
+            "page_map": self.page_map,
+            "pdf_sha256": self.pdf_sha256,
+            "docling_opts_sha256": self.docling_opts_sha256,
+        }
 
-    if not pdf_path.exists():
-        raise ConversionError(f"PDF が見つかりません: {pdf_path}")
-    if pdf_path.suffix.lower() != ".pdf":
-        raise ConversionError(".pdf 以外のファイルは処理できません。")
 
+def convert_pdf_to_markdown(
+    pdf_path: str | Path,
+    out_dir: str | Path,
+    *,
+    options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Docling で PDF を Markdown に変換し、関連ディレクトリを整備する。"""
+
+    pdf = Path(pdf_path)
+    if not pdf.exists():
+        raise ConvertError(f"PDF not found: {pdf}")
+    if pdf.suffix.lower() != ".pdf":
+        raise ConvertError("Only .pdf files can be converted")
+
+    output_dir = Path(out_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / (pdf_path.stem + ".md")
 
-    if output_path.exists() and not force:
-        raise ConversionError(f"出力ファイルが既に存在します: {output_path}")
+    assets_dir = output_dir / "assets"
+    tables_dir = output_dir / "tables"
+    assets_dir.mkdir(exist_ok=True)
+    tables_dir.mkdir(exist_ok=True)
 
-    markdown = _convert_with_docling(pdf_path)
-    output_path.write_text(markdown, encoding="utf-8")
-    return output_path
+    markdown, page_map = _convert_with_docling(pdf, options or {})
+
+    main_md_path = output_dir / "main.md"
+    main_md_path.write_text(markdown, encoding="utf-8")
+
+    pdf_sha = _sha256_file(pdf)
+    opts_sha = _sha256_options(options or {})
+
+    result = ConvertResult(
+        main_md_path=main_md_path,
+        assets_dir=assets_dir,
+        tables_dir=tables_dir,
+        page_map=page_map,
+        pdf_sha256=pdf_sha,
+        docling_opts_sha256=opts_sha,
+    )
+    return result.to_dict()
 
 
-def _convert_with_docling(pdf_path: Path) -> str:
+def _convert_with_docling(
+    pdf_path: Path,
+    options: Dict[str, Any],
+) -> Tuple[str, List[Dict[str, Any]]]:
     converter = _get_converter()
     try:
         result = converter.convert(str(pdf_path))
-    except Exception as exc:  # pragma: no cover - 外部ライブラリ例外をまとめて扱う
-        raise ConversionError(f"Docling の変換に失敗しました: {exc}") from exc
+    except Exception as exc:  # pragma: no cover - 外部ライブラリの例外をまとめて扱う
+        raise ConvertError(f"Docling convert failed: {exc}") from exc
 
     if result.status not in {ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS}:
-        errors = ", ".join(err.error_message for err in getattr(result, "errors", []) if err.error_message)
-        error_msg = errors or "詳細不明"
-        raise ConversionError(f"Docling が変換に失敗しました: {error_msg}")
+        errors: List[str] = []
+        for err in getattr(result, "errors", []) or []:
+            message = getattr(err, "error_message", None)
+            if message:
+                errors.append(str(message))
+        joined = "; ".join(errors) if errors else "unknown error"
+        raise ConvertError(f"Docling returned non-success status: {joined}")
 
     document = getattr(result, "document", None)
     if document is None:
-        raise ConversionError("Docling 変換結果に document が含まれていません。")
+        raise ConvertError("Docling result is missing document content")
 
     markdown = document.export_to_markdown()
-    if not markdown.strip():
-        raise ConversionError("Docling 変換で空の Markdown が生成されました。")
+    if not isinstance(markdown, str) or not markdown.strip():
+        raise ConvertError("Docling produced empty markdown output")
 
-    return markdown
+    raw_page_map = getattr(result, "page_map", None)
+    page_map: List[Dict[str, Any]]
+    if isinstance(raw_page_map, list) and raw_page_map:
+        page_map = [
+            {
+                "page": int(item.get("page", index + 1)),
+                "start": int(item.get("start", 0)),
+                "end": int(item.get("end", 0)),
+            }
+            for index, item in enumerate(raw_page_map)
+        ]
+    else:
+        page_map = _fallback_page_map(markdown)
 
-
-def _resolve_inputs(inputs: Optional[Sequence[str]]) -> List[Path]:
-    if not inputs:
-        return _collect_pdfs(DEFAULT_INPUT_DIR)
-
-    collected: List[Path] = []
-    seen = set()
-    for item in inputs:
-        path = Path(item).expanduser()
-        if path.is_dir():
-            for pdf_path in _collect_pdfs(path):
-                if pdf_path not in seen:
-                    collected.append(pdf_path)
-                    seen.add(pdf_path)
-            continue
-
-        if path.suffix.lower() != ".pdf":
-            raise ConversionError(f"PDF ファイルではありません: {path}")
-        if not path.exists():
-            raise ConversionError(f"PDF が見つかりません: {path}")
-        resolved = path.resolve()
-        if resolved not in seen:
-            collected.append(resolved)
-            seen.add(resolved)
-
-    if not collected:
-        raise ConversionError("処理対象の PDF が見つかりませんでした。")
-
-    return collected
+    return markdown, page_map
 
 
-def _collect_pdfs(directory: Path) -> List[Path]:
-    directory = Path(directory)
-    if not directory.exists():
-        raise ConversionError(f"入力ディレクトリが見つかりません: {directory}")
-    pdfs = sorted(p.resolve() for p in directory.glob("*.pdf") if p.is_file())
-    if not pdfs:
-        raise ConversionError(f"PDF が存在しません: {directory}")
-    return pdfs
+def _fallback_page_map(markdown: str) -> List[Dict[str, int]]:
+    text_length = len(markdown)
+    return [
+        {
+            "page": 1,
+            "start": 0,
+            "end": text_length,
+        }
+    ]
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="PDF を Markdown に変換するユーティリティ")
-    parser.add_argument(
-        "--input",
-        nargs="*",
-        help="処理する PDF ファイルまたはディレクトリ。省略時は data/raw/papers 内の全 PDF を対象",
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_options(options: Dict[str, Any]) -> str:
+    normalized = json.dumps(options, ensure_ascii=False, sort_keys=True, separators=(",", ": ")).encode(
+        "utf-8"
     )
-    parser.add_argument(
-        "--output-dir",
-        default=str(DEFAULT_OUTPUT_DIR),
-        help="出力先ディレクトリ (既定: data/generated)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="既存の Markdown を上書きする",
-    )
-    return parser
+    return hashlib.sha256(normalized).hexdigest()
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    try:
-        output_dir = Path(args.output_dir).expanduser()
-        output_dir = output_dir.resolve()
-        pdf_paths = _resolve_inputs(args.input)
-        for pdf_path in pdf_paths:
-            convert_pdf(pdf_path, output_dir, force=args.force)
-        return 0
-    except ConversionError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-    except Exception as exc:  # 予期しない例外も標準エラーに出す
-        print(f"Unexpected error: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+__all__ = ["convert_pdf_to_markdown", "ConvertError"]

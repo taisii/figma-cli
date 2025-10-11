@@ -1,106 +1,71 @@
-from pathlib import Path
+from __future__ import annotations
+
 import json
+from pathlib import Path
+
 import yaml
 
 
-def build_config(tmp_path: Path) -> dict:
-    return {
-        "document_ingest": {
-            "raw_dir": str(tmp_path / "raw"),
-            "processed_dir": str(tmp_path / "processed"),
-            "summaries_dir": str(tmp_path / "summaries" / "papers"),
-            "summary_index_path": str(tmp_path / "summaries" / "papers" / "index.json"),
-            "index_path": str(tmp_path / "processed" / "index.yaml"),
+def test_ingest_list_load_and_save_summary(monkeypatch, tmp_path):
+    from src.tools import research
+    from src import convert
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 dummy")
+
+    def fake_convert(pdf, out_dir, options=None):
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        assets_dir = out_dir / "assets"
+        tables_dir = out_dir / "tables"
+        assets_dir.mkdir(exist_ok=True)
+        tables_dir.mkdir(exist_ok=True)
+        main_md = out_dir / "main.md"
+        main_md.write_text("# Sample Paper\n\nThis is the content.", encoding="utf-8")
+        return {
+            "main_md_path": str(main_md),
+            "assets_dir": str(assets_dir),
+            "tables_dir": str(tables_dir),
+            "page_map": [{"page": 1, "start": 0, "end": 10}],
+            "pdf_sha256": "sha256-pdf",
+            "docling_opts_sha256": "sha256-opts",
         }
-    }
 
+    monkeypatch.setattr(convert, "convert_pdf_to_markdown", fake_convert)
 
-def prepare_paper(tmp_path: Path, slug: str, with_meta: bool = True) -> Path:
-    root = tmp_path / "processed" / slug
-    root.mkdir(parents=True)
-    (root / "paper.md").write_text(
-        "---\ntitle: Sample Title\nauthors: [Alice, Bob]\nyear: 2024\n---\n\nBody\n",
-        encoding="utf-8",
-    )
-    if with_meta:
-        yaml.safe_dump(
-            {"id": slug, "title": "Sample Title", "authors": ["Alice", "Bob"], "year": 2024},
-            (root / "metadata.yaml").open("w", encoding="utf-8"),
-            allow_unicode=True,
-            sort_keys=False,
-        )
-    return root
+    base_dir = tmp_path
+    result = research.ingest_pdf("sample-paper", pdf_path, base_dir)
 
+    main_md_path = Path(result["main_md_path"])
+    assert main_md_path.exists()
+    assert main_md_path.read_text(encoding="utf-8").startswith("---\n")
 
-def test_list_load_and_save_summary(monkeypatch, tmp_path):
-    from src.tools import research
+    papers_index = base_dir / "context" / "papers" / "index.yaml"
+    index_data = yaml.safe_load(papers_index.read_text(encoding="utf-8"))
+    assert index_data["version"] == 1
+    paper_entry = next(item for item in index_data["papers"] if item["slug"] == "sample-paper")
+    assert paper_entry["chunk_count"] == len(result["chunks"])
+    assert paper_entry["hash"]["pdf_sha256"] == "sha256-pdf"
 
-    cfg = build_config(tmp_path)
-    prepare_paper(tmp_path, "paper-1", with_meta=True)
-
-    # list_papers
-    entries = research.list_papers(cfg)
+    entries = research.list_papers(base_dir)
     assert len(entries) == 1
-    assert entries[0]["id"] == "paper-1"
-    assert entries[0]["title"] == "Sample Title"
+    assert entries[0]["slug"] == "sample-paper"
+    assert Path(entries[0]["md_path"]).exists()
 
-    # load_paper
-    loaded = research.load_paper("paper-1", max_chars=10, config=cfg)
-    assert loaded["truncated"] is True
-    assert loaded["content"]
+    loaded = research.load_paper("sample-paper", base_dir, max_chars=50)
+    assert loaded["meta"]["title"] == "Sample Paper"
+    assert loaded["truncated"] is False
 
-    # save_summary
-    result = research.save_summary("paper-1", "Summary text", tags=["tag1"], config=cfg)
-    summary_path = Path(result["summary_path"])  # absolute
-    alias_path = Path(result["summary_alias_path"])  # absolute
+    summary_result = research.save_summary("sample-paper", "Summary text", base_dir, tags=["intro"])
+    summary_path = Path(summary_result["summary_path"])
     assert summary_path.exists()
-    assert alias_path.exists()
-    assert summary_path.read_text(encoding="utf-8").strip() == "Summary text"
+    assert summary_path.read_text(encoding="utf-8").strip().endswith("Summary text")
 
-    # index.yaml 更新
-    index_path = Path(cfg["document_ingest"]["index_path"])
-    index = yaml.safe_load(index_path.read_text(encoding="utf-8"))
-    assert any(item["id"] == "paper-1" and item.get("summary_generated") for item in index)
-
-    # summaries index 更新
-    sidx_path = Path(cfg["document_ingest"]["summary_index_path"])
-    sidx = json.loads(sidx_path.read_text(encoding="utf-8"))
-    assert any(item["id"] == "paper-1" for item in sidx)
-
-
-def test_list_papers_fallback_to_frontmatter_when_metadata_incomplete(tmp_path):
-    from src.tools import research
-
-    cfg = build_config(tmp_path)
-    root = prepare_paper(tmp_path, "paper-2", with_meta=False)
-    # metadata.yaml は id と title のみ（authors/year 欠落）
-    (root / "metadata.yaml").write_text(
-        yaml.safe_dump({"id": "paper-2", "title": "Sample Title"}, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-
-    entries = research.list_papers(cfg)
-    e = next(e for e in entries if e["id"] == "paper-2")
-    assert e["authors"] == ["Alice", "Bob"]  # frontmatter から補完
-    assert e["year"] == 2024
-
-
-def test_list_papers_prefers_metadata_over_frontmatter(tmp_path):
-    from src.tools import research
-
-    cfg = build_config(tmp_path)
-    root = prepare_paper(tmp_path, "paper-3", with_meta=False)
-    # metadata.yaml に authors/year を明示（meta を優先）
-    (root / "metadata.yaml").write_text(
-        yaml.safe_dump(
-            {"id": "paper-3", "title": "Sample Title", "authors": ["X", "Y"], "year": 1999},
-            allow_unicode=True,
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    entries = research.list_papers(cfg)
-    e = next(e for e in entries if e["id"] == "paper-3")
-    assert e["authors"] == ["X", "Y"]
-    assert e["year"] == 1999
+    summary_index_path = base_dir / "context" / "summaries" / "papers" / "index.json"
+    summary_index = json.loads(summary_index_path.read_text(encoding="utf-8"))
+    assert summary_index["version"] == 1
+    summary_entry = summary_index["summaries"][0]
+    assert summary_entry["slug"] == "sample-paper"
+    assert summary_entry["tags"] == ["intro"]
+    assert summary_entry["source_hash"] == "sha256-pdf"
+    assert summary_entry["chunk_refs"] == [chunk["id"] for chunk in result["chunks"]]
