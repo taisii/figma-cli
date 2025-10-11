@@ -7,53 +7,57 @@
 ## 提供機能（Python ツール関数）
 
 - `src/tools/research.py`
-  - `list_papers(config=None) -> list[dict]`
-    - `context/papers/<slug>/` を走査して論文一覧を返す。
-  - `load_paper(slug, max_chars=None, config=None) -> dict`
-    - `paper.md` を読み出し、必要なら文字数制限して返す。
-  - `save_summary(slug, content, tags=None, config=None) -> dict`
-    - `summary.md` を保存し、`context/summaries/papers/<slug>.md` の別名同期、`index.yaml` と `summaries/index.json` を更新。
+  - `list_papers(base_dir) -> list[dict]`
+    - `context/papers/index.yaml` を読み、既知パスキーを絶対パスへ正規化して返す。
+  - `load_paper(slug, base_dir, *, max_chars=None) -> dict`
+    - `context/papers/<slug>/main.md` を読み出し、front matter を除いた本文を返す。
+  - `save_summary(slug, content, base_dir, *, tags=None) -> dict`
+    - `context/summaries/papers/<slug>.md` を保存し、`context/papers/index.yaml` と `context/summaries/papers/index.json` を更新。
+  - `ingest_pdf(slug, pdf_path, base_dir, *, options=None) -> dict`
+    - PDF を変換→`main.md` に front matter 付与→チャンク生成→索引更新まで一括実行（重複スラグは `ConflictError`）。
+  - `convert_pdf_to_markdown(pdf_path, out_dir, *, options=None) -> dict`
+    - Docling により PDF を `main.md` に変換（`assets/`, `tables/` も整備）。
+  - `chunk_markdown_for_llm(markdown_path, out_dir, *, strategy='heading', max_chars=4000, overlap=200) -> dict`
+    - Markdown をチャンク分割して `chunks/` と `index.json` を生成。
 
-加えて、PDF→Markdown 変換ユーティリティを同梱しています（LLM 非依存）。
-- `src/convert.py`（Docling ベース）
-  - CLI: `python -m src.convert --input path/to/paper.pdf --output-dir data/generated` 
-  - 出力: `data/generated/<name>.md`
-
-要約の生成自体は Codex CLI のプロンプト（例: `.codex/prompts/summary.md`）で行い、本ツールは結果の永続化のみを担当する。
+要約の生成自体は Codex CLI 側で行い、本ツールは結果の永続化のみを担当します。
 
 ## 使い方（例）
-
-Codex CLI のツール実行から Python 関数を呼べる設定で、下記のように利用します。
-
-1. `load_paper(slug)` で本文を取得 → CLI 側のプロンプトで要約生成。
-2. 生成テキストを `save_summary(slug, content)` に渡して保存・索引更新。
-
-Python から直接呼ぶ場合の参考:
 
 ```python
 from src.tools import research
 
-cfg = research.load_config()
-paper = research.load_paper("my-paper-slug", max_chars=8000, config=cfg)
-summary = "...ここにCLIで生成したサマリー文字列..."
-result = research.save_summary("my-paper-slug", summary, tags=["experiment"], config=cfg)
-print(result)
+base = "."  # リポジトリのベースディレクトリ
+slug = "my-paper-slug"
+pdf  = "path/to/paper.pdf"
 
-# PDF→Markdown 変換をツール関数として利用する例
-res = research.convert_pdf_tool("path/to/paper.pdf", output_dir="data/generated", force=False)
-print(res["markdown_path"])  # 生成された Markdown のパス
+# 取り込み（変換→保存→索引更新→チャンク）
+ing = research.ingest_pdf(slug, pdf, base_dir=base)
+
+# 一覧・読み込み
+papers = research.list_papers(base)
+paper  = research.load_paper(slug, base, max_chars=8000)
+
+# 要約の保存（CLI で生成したテキストを渡す）
+res = research.save_summary(slug, "...要約本文...", base, tags=["experiment"])
+print(res["summary_path"])  # 絶対パス
+
+# 単体の PDF 変換ユーティリティとして
+conv = research.convert_pdf_to_markdown(pdf, out_dir="data/generated")
+print(conv["main_md_path"])  # 生成された main.md の絶対パス
 ```
 
 ## ディレクトリ/設定
 
-- 既定の配置
-  - 論文本文: `context/papers/<slug>/paper.md`
-  - 要約別名: `context/summaries/papers/<slug>.md`
+- 既定の配置（固定規約）
+  - 論文本文: `context/papers/<slug>/main.md`
+  - チャンク: `context/papers/<slug>/chunks/`（`index.json`）
+  - 要約: `context/summaries/papers/<slug>.md`
   - 論文索引: `context/papers/index.yaml`
   - 要約索引: `context/summaries/papers/index.json`
-- これらのパスは `config.yaml` の `document_ingest` セクションで変更可能です。
+- 設定ファイル `config.yaml` は参考情報です。コア関数は設定を読みません。
 
 ## 開発メモ
 
 - 本リポジトリは API を直接呼びません。LLM 呼び出しは会話エンジン（Codex CLI）側で行ってください。
-- 生成物は可逆なので、必要に応じて再生成・再保存できます。
+- 生成物は決定論的ですが、変換スキップ最適化（`pdf_sha256`/Docling 設定一致でのスキップ）は現状未実装です（将来対応）。

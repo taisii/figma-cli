@@ -1,95 +1,66 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import hashlib
+
 import pytest
 
 from docling.document_converter import ConversionStatus
 
 
 @pytest.fixture
-def fake_pdf(tmp_path) -> Path:
+def fake_pdf(tmp_path: Path) -> Path:
     pdf_path = tmp_path / "sample.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 dummy content")
     return pdf_path
 
 
-def test_convert_single_pdf(monkeypatch, fake_pdf, tmp_path):
+def test_convert_pdf_to_markdown(monkeypatch, fake_pdf, tmp_path):
     from src import convert
 
-    class DummyDocument:
-        def export_to_markdown(self):
-            return "# Title\n\nSection paragraph."
+    markdown_text = "# Sample Paper\n\nBody paragraph."
+    page_map = [
+        {"page": 1, "start": 0, "end": len(markdown_text)},
+    ]
 
-    dummy_document = DummyDocument()
+    dummy_document = SimpleNamespace(export_to_markdown=lambda: markdown_text)
     dummy_result = SimpleNamespace(
         status=ConversionStatus.SUCCESS,
         document=dummy_document,
         errors=[],
+        page_map=page_map,
     )
 
     class DummyConverter:
         def __init__(self):
             self.paths = []
+            self.kwargs_list = []
 
-        def convert(self, path):
+        def convert(self, path, **kwargs):
             self.paths.append(path)
+            self.kwargs_list.append(kwargs)
             return dummy_result
 
     dummy_converter = DummyConverter()
     monkeypatch.setattr(convert, "_get_converter", lambda: dummy_converter)
 
-    output_dir = tmp_path / "generated"
-    md_path = convert.convert_pdf(fake_pdf, output_dir)
+    options = {"mode": "fast"}
+    out_dir = tmp_path / "output"
+    result = convert.convert_pdf_to_markdown(fake_pdf, out_dir, options=options)
 
+    expected_hash = hashlib.sha256(fake_pdf.read_bytes()).hexdigest()
+    expected_opts_hash = hashlib.sha256(b'{"mode": "fast"}').hexdigest()
+
+    main_md_path = Path(result["main_md_path"])
+    assert main_md_path.exists()
+    assert main_md_path.read_text(encoding="utf-8") == markdown_text
+
+    assert result["assets_dir"] == str(out_dir / "assets")
+    assert result["tables_dir"] == str(out_dir / "tables")
+    assert result["page_map"] == page_map
+    assert result["pdf_sha256"] == expected_hash
+    assert result["docling_opts_sha256"] == expected_opts_hash
+
+    # converter が呼ばれ、options が伝搬している
     assert dummy_converter.paths == [str(fake_pdf)]
-    assert md_path == output_dir / "sample.md"
-    content = md_path.read_text(encoding="utf-8")
-    assert content.startswith("# Title\n\nSection paragraph.")
-
-
-def test_convert_refuses_overwrite_without_force(monkeypatch, fake_pdf, tmp_path):
-    from src import convert
-
-    def fail_converter():
-        raise AssertionError("Docling converter should not be used when overwrite is blocked")
-
-    monkeypatch.setattr(convert, "_get_converter", fail_converter)
-
-    output_dir = tmp_path / "generated"
-    output_dir.mkdir()
-    existing = output_dir / "sample.md"
-    existing.write_text("existing content", encoding="utf-8")
-
-    with pytest.raises(convert.ConversionError):
-        convert.convert_pdf(fake_pdf, output_dir)
-
-
-def test_convert_all_from_directory(monkeypatch, tmp_path):
-    from src import convert
-
-    pdf_dir = tmp_path / "data" / "raw" / "papers"
-    pdf_dir.mkdir(parents=True)
-    first_pdf = pdf_dir / "first.pdf"
-    second_pdf = pdf_dir / "second.pdf"
-    first_pdf.write_bytes(b"%PDF-1.4 A")
-    second_pdf.write_bytes(b"%PDF-1.4 B")
-
-    generated_dir = tmp_path / "data" / "generated"
-
-    calls = []
-
-    def fake_convert(pdf_path, output_dir, force=False):
-        calls.append((Path(pdf_path), Path(output_dir), force))
-        return Path(output_dir) / (Path(pdf_path).stem + ".md")
-
-    monkeypatch.setattr(convert, "convert_pdf", fake_convert)
-
-    monkeypatch.chdir(tmp_path)
-
-    exit_code = convert.main([])
-
-    assert exit_code == 0
-    assert calls == [
-        (first_pdf, generated_dir, False),
-        (second_pdf, generated_dir, False),
-    ]
+    assert dummy_converter.kwargs_list and dummy_converter.kwargs_list[0].get("options") == options

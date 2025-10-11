@@ -13,8 +13,8 @@
 
 ---
 
-## 公開API（案）
-型は説明用。実装では適切に`TypedDict`/`dataclass`を用いる。
+## 公開API（現状）
+型は説明用。実装は `src/tools/research.py` および `src/convert.py` に準拠。
 
 ```python
 def convert_pdf_to_markdown(
@@ -68,8 +68,8 @@ def save_summary(
 ```
 
 原則:
-- すべての関数は入出力パスを引数で受け取り、実際に書き込んだ相対パス一覧とハッシュを返す。
-- LLM/ネットワークを呼ばない。I/O失敗は明示的な例外で通知する。
+- すべての関数は入出力パスを引数で受け取り、戻り値は原則「絶対パス」。索引に保存する値は相対パスに正規化する。
+- LLM/ネットワークを呼ばない。I/O 失敗は明示的な例外で通知する。
 
 ---
 
@@ -86,7 +86,7 @@ def save_summary(
         chunks/
           0001.md, 0002.md, ... # チャンク済み本文
           index.json             # チャンクメタ
-        source.pdf               # 任意（同一性確認用）
+        source.pdf               # 常に保存（同一性確認用）
     papers/index.yaml            # グローバル索引（version付き）
     summaries/
       papers/<slug>.md           # 要約（メタ付き）
@@ -135,20 +135,21 @@ papers:
 
 ---
 
-## 変換・チャンク方針
-- 変換: Doclingを必須採用。見出し階層（h1–h3）とページ番号を可能な限り保持。
-- 表: 本文側は概要＋リンク、実体は`tables/`へCSV/MDで保存。
-- 数式: 既定はテキスト優先、レンダ不可は画像代替（オプション）。
-- チャンク: 見出しベースで分割し、閾値超過時のみ二次分割。既定`max_chars=4000`、`overlap=200`。
-- 再実行決定性: `pdf_sha256`とDocling設定ハッシュが同一なら変換をスキップ。
+## 変換・チャンク方針（現状と将来）
+- 変換（現状）: Docling を使用し `main.md` を生成。見出し階層とページ情報は Docling の結果に依存。
+- 表（将来）: 本文側は概要＋リンク、実体は `tables/` へ CSV/MD で保存（現状はディレクトリ作成のみ）。
+- 数式（将来）: 既定はテキスト優先、レンダ不可は画像代替（オプション）。
+- チャンク（現状）: 見出しベースで分割し、閾値超過時のみ二次分割。既定 `max_chars=4000`、`overlap=200`。
+- 再実行決定性（将来）: `pdf_sha256` と Docling 設定ハッシュが同一なら変換をスキップ予定（現状は毎回変換）。
 
 ---
 
 ## 整合性・エラー処理
-- 原子的更新: 一時ファイルに書き出し、`os.replace`で入れ替え。途中失敗は痕跡を残さない。
-- 例外階層: `ResearchError`基底に`NotFoundError`/`IOError`/`ValidationError`/`ConflictError`/`ConvertError`。
-- 同時実行: 当面は単一プロセス前提。将来は`filelock`導入で拡張可能に実装。
-- スラグ規約: 小文字英数と`-`のみ、先頭末尾`-`禁止、重複はエラー。
+- 原子的更新: 一時ファイルに書き出し、`os.replace` で入れ替え。途中失敗は痕跡を残さない。
+- 例外階層: `ResearchError` 基底に `NotFoundError`/`IOError`/`ValidationError`/`ConflictError`/`ConvertError`。
+- 同時実行: 当面は単一プロセス前提。将来は `filelock` 導入で拡張可能に実装。
+- スラグ規約: 小文字英数と `-` のみ、先頭末尾 `-` 禁止、重複はエラー（実装済み）。
+- `source.pdf`: 取り込み時に常に保存（実装）。
 
 ---
 
